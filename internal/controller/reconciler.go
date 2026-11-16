@@ -65,6 +65,10 @@ type TaskReconciler struct {
 	// defaultTaskImage is used when the effective profile omits image and ate_actor_template.
 	defaultTaskImage string
 
+	// KubeProxyEndpoint is the default HTTPS base URL of k8s-api-proxy used when a
+	// Gateway sets spec.kubernetes without an explicit endpoint.
+	KubeProxyEndpoint string
+
 	// WorkspaceReadyTimeout bounds how long Resume waits for the actor's workspace
 	// to report ready before recording it as still initializing.
 	WorkspaceReadyTimeout time.Duration
@@ -89,6 +93,7 @@ func NewTaskReconciler(client *substrate.Client, defaultTemplate, defaultTemplat
 		defaultTemplate:         defaultTemplate,
 		defaultTemplateAtespace: defaultTemplateAtespace,
 		defaultTaskImage:        defaultTaskImage,
+		KubeProxyEndpoint:       v1alpha1.DefaultKubeProxyEndpoint,
 		WorkspaceReadyTimeout:   defaultWorkspaceReadyTimeout,
 	}
 }
@@ -134,7 +139,7 @@ func newProbeHTTPClient() *http.Client {
 // what AX stores in the task's status: the resolved template name, resolved
 // argv, and on failure the reason in a False Ready condition. The caller sets
 // the state, and the server reads the rest of the status from the actor.
-func (r *TaskReconciler) ensureSubstrateResources(ctx context.Context, task *v1alpha1.Task, ws *v1alpha1.Workspace) error {
+func (r *TaskReconciler) ensureSubstrateResources(ctx context.Context, task *v1alpha1.Task, ws *v1alpha1.Workspace, gw *v1alpha1.Gateway) error {
 	if task.Metadata == nil {
 		task.Metadata = &v1alpha1.ObjectMeta{}
 	}
@@ -195,13 +200,20 @@ func (r *TaskReconciler) ensureSubstrateResources(ctx context.Context, task *v1a
 		}
 		templateAtespace = atespace
 		templateName = tpl
-	} else {
+	} else if existingTpl := task.Status.GetAteActorTemplate(); existingTpl != "" && task.Spec.GetGateway().GetName() != "" && gw == nil {
+		// Keep the task's creation-time template when its Gateway was deleted later.
+		if _, getErr := r.client.GetActorTemplate(ctx, atespace, existingTpl); getErr == nil {
+			templateAtespace = atespace
+			templateName = existingTpl
+		}
+	}
+	if templateName == "" {
 		image := effective.GetImage()
 		if image == "" {
 			image = r.defaultTaskImage
 		}
 		slog.Info("reconciling task", "name", task.Metadata.Name, "atespace", atespace, "image", image)
-		templateAtespace, templateName, err = r.ensureTaskTemplate(ctx, task, ws, atespace, image, effective.GetResources(), now)
+		templateAtespace, templateName, err = r.ensureTaskTemplate(ctx, task, ws, gw, atespace, image, effective.GetResources(), now)
 		if err != nil {
 			return err
 		}
@@ -228,6 +240,7 @@ func (r *TaskReconciler) ensureTaskTemplate(
 	ctx context.Context,
 	task *v1alpha1.Task,
 	ws *v1alpha1.Workspace,
+	gw *v1alpha1.Gateway,
 	atespace, image string,
 	resSpec *v1alpha1.ResourcesSpec,
 	now time.Time,
@@ -263,6 +276,29 @@ func (r *TaskReconciler) ensureTaskTemplate(
 	if ws != nil {
 		if wsYAML, err := yaml.Marshal(ws); err == nil {
 			extraEnv["AX_WORKSPACE_YAML"] = string(wsYAML)
+		}
+	}
+
+	// Inject resolved Kubernetes proxy access settings when the Gateway sets spec.kubernetes.
+	// Only KubernetesAccess (never Gateway.spec.egress) enters the sandbox environment.
+	if existingTpl := task.Status.GetAteActorTemplate(); existingTpl != "" {
+		if prev, getErr := r.client.GetActorTemplate(ctx, atespace, existingTpl); getErr == nil {
+			for _, c := range prev.GetContainers() {
+				for _, ev := range c.GetEnv() {
+					if ev.GetName() == "AX_KUBERNETES_YAML" {
+						extraEnv["AX_KUBERNETES_YAML"] = ev.GetValue()
+					}
+				}
+			}
+		}
+	} else if gw.GetSpec().GetKubernetes() != nil {
+		resolvedK8s, _, err := ResolveKubernetesAccess(gw.GetSpec().GetKubernetes(), r.KubeProxyEndpoint)
+		if err != nil {
+			r.setNotReady(task, v1alpha1.ReasonGatewayBindingFailed, err.Error(), now)
+			return "", "", fmt.Errorf("resolving gateway kubernetes access: %w", err)
+		}
+		if k8sYAML, err := yaml.Marshal(resolvedK8s); err == nil {
+			extraEnv["AX_KUBERNETES_YAML"] = string(k8sYAML)
 		}
 	}
 
@@ -311,8 +347,10 @@ func (r *TaskReconciler) bindGateway(ctx context.Context, task *v1alpha1.Task, g
 	if status.Code(err) == codes.NotFound {
 		if gw == nil {
 			err = fmt.Errorf("not available in atespace %q", atespace)
+		} else if rules, expandErr := ExpandGatewayEgress(gw, r.KubeProxyEndpoint); expandErr != nil {
+			err = expandErr
 		} else {
-			err = r.client.EnsureActorEgressPolicy(ctx, atespace, actorName, gw.GetSpec().GetEgress())
+			err = r.client.EnsureActorEgressPolicy(ctx, atespace, actorName, rules)
 		}
 	}
 	if err != nil {
@@ -335,7 +373,7 @@ func (r *TaskReconciler) Suspend(ctx context.Context, task *v1alpha1.Task, ws *v
 	if task.GetStatus() != nil {
 		prevStatus = proto.Clone(task.Status).(*v1alpha1.TaskStatus)
 	}
-	if err := r.ensureSubstrateResources(ctx, task, ws); err != nil {
+	if err := r.ensureSubstrateResources(ctx, task, ws, gw); err != nil {
 		return err
 	}
 	atespace, actorName := task.Metadata.Atespace, task.Metadata.Name
@@ -357,7 +395,7 @@ func (r *TaskReconciler) Suspend(ctx context.Context, task *v1alpha1.Task, ws *v
 // set up, recording the result in the WorkspaceReady condition. A failure to
 // resume the actor is recorded the way ensureSubstrateResources records its own.
 func (r *TaskReconciler) Resume(ctx context.Context, task *v1alpha1.Task, ws *v1alpha1.Workspace, gw *v1alpha1.Gateway) error {
-	if err := r.ensureSubstrateResources(ctx, task, ws); err != nil {
+	if err := r.ensureSubstrateResources(ctx, task, ws, gw); err != nil {
 		return err
 	}
 	if err := r.bindGateway(ctx, task, gw); err != nil {

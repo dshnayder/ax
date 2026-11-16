@@ -1,0 +1,178 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: k8s-api-proxy
+  namespace: ax-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: ax-k8s-api-proxy
+rules:
+  - apiGroups: ["*"]
+    resources: ["*"]
+    verbs: ["get", "list", "watch"]
+  - nonResourceURLs: ["/api", "/api/*", "/apis", "/apis/*", "/healthz", "/livez", "/readyz", "/metrics", "/openapi", "/openapi/*", "/version"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: ax-k8s-api-proxy
+subjects:
+  - kind: ServiceAccount
+    name: k8s-api-proxy
+    namespace: ax-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: ax-k8s-api-proxy
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: k8s-api-proxy
+  namespace: ax-system
+  labels:
+    app.kubernetes.io/name: k8s-api-proxy
+    app.kubernetes.io/part-of: ax
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: k8s-api-proxy
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: k8s-api-proxy
+    spec:
+      serviceAccountName: k8s-api-proxy
+      containers:
+        - name: k8s-api-proxy
+          image: ${KUBE_PROXY_IMAGE}
+          imagePullPolicy: Always
+          args:
+            - "--listen-addr=:8443"
+            - "--metrics-port=8444"
+            - "--mode=read-only-dry-run"
+            - "--redact-secrets=true"
+            - "--tls-cert-file=/run/servicedns.podcert.ate.dev/credential-bundle.pem"
+            - "--tls-key-file=/run/servicedns.podcert.ate.dev/credential-bundle.pem"
+            - "--oidc-issuer-url=https://idp.ate-system.svc"
+            - "--oidc-audience=https://k8s-api-proxy.ax-system.svc"
+            - "--oidc-ca-file=/run/servicedns-ca/trust-bundle.pem"
+          ports:
+            - containerPort: 8443
+              name: https
+            - containerPort: 8444
+              name: metrics
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 1000m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /_kube_proxy/healthz
+              port: 8443
+              scheme: HTTPS
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /_kube_proxy/healthz
+              port: 8443
+              scheme: HTTPS
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: servicedns
+              mountPath: /run/servicedns.podcert.ate.dev
+              readOnly: true
+            - name: servicedns-ca
+              mountPath: /run/servicedns-ca
+              readOnly: true
+      volumes:
+        - name: servicedns
+          projected:
+            defaultMode: 420
+            sources:
+              - podCertificate:
+                  signerName: servicedns.podcert.ate.dev/identity
+                  keyType: ECDSAP256
+                  credentialBundlePath: credential-bundle.pem
+        - name: servicedns-ca
+          projected:
+            defaultMode: 420
+            sources:
+              - clusterTrustBundle:
+                  labelSelector:
+                    matchLabels:
+                      podcert.ate.dev/canarying: live
+                  path: trust-bundle.pem
+                  signerName: servicedns.podcert.ate.dev/identity
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: k8s-api-proxy
+  namespace: ax-system
+  labels:
+    app.kubernetes.io/name: k8s-api-proxy
+    app.kubernetes.io/part-of: ax
+spec:
+  ports:
+    - port: 443
+      targetPort: 8443
+      name: https
+    - port: 8444
+      targetPort: 8444
+      name: metrics
+  selector:
+    app.kubernetes.io/name: k8s-api-proxy
+---
+# Only the Agent Substrate egress gateway may reach k8s-api-proxy on port 8443,
+# so tasks cannot bypass egress policy enforcement or Actor JWT injection.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: k8s-api-proxy
+  namespace: ax-system
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: k8s-api-proxy
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ate-system
+          podSelector:
+            matchLabels:
+              app: atenet-egress
+      ports:
+        - protocol: TCP
+          port: 8443

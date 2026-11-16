@@ -398,3 +398,51 @@ func TestRun_SetupFailureAbortsBeforeStartingCommand(t *testing.T) {
 		t.Fatalf("spec.command started despite workspace setup failure")
 	}
 }
+
+func TestRun_WritesKubeconfigForGatewayKubernetes(t *testing.T) {
+	h := newHarness(t)
+	tmp := t.TempDir()
+	caFile := filepath.Join(tmp, "egress-ca.pem")
+	if err := os.WriteFile(caFile, []byte("FAKE-CA"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	outFile := filepath.Join(tmp, "kubeconfig-path.txt")
+
+	h.cfg.CABundle = caFile
+	h.cfg.Kubernetes = &v1alpha1.KubernetesAccess{
+		Clusters:       []string{"in-cluster", "gke_proj_us-central1_c1"},
+		DefaultCluster: "gke_proj_us-central1_c1",
+		Endpoint:       "https://k8s-api-proxy.ax-system.svc",
+	}
+	h.task.Spec.Commands = []string{"sh", "-c", `printf '%s' "$KUBECONFIG" > ` + outFile}
+
+	exit := h.runUntilCommandExits(t)
+	if exit.Err != nil || exit.ExitCode != 0 {
+		t.Fatalf("unexpected exit: %+v", exit)
+	}
+
+	kubeconfigPathBytes, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kubeconfigPath := string(kubeconfigPathBytes)
+	if kubeconfigPath == "" {
+		t.Fatal("KUBECONFIG env var was not set")
+	}
+	contentBytes, err := os.ReadFile(kubeconfigPath)
+	if err != nil {
+		t.Fatalf("reading generated kubeconfig %s: %v", kubeconfigPath, err)
+	}
+	content := string(contentBytes)
+	for _, want := range []string{
+		"current-context: gke_proj_us-central1_c1",
+		"server: https://k8s-api-proxy.ax-system.svc/clusters/in-cluster",
+		"server: https://k8s-api-proxy.ax-system.svc/clusters/gke_proj_us-central1_c1",
+		"certificate-authority: " + caFile,
+		"token: ax-placeholder",
+	} {
+		if !strings.Contains(content, want) {
+			t.Errorf("kubeconfig missing %q:\n%s", want, content)
+		}
+	}
+}

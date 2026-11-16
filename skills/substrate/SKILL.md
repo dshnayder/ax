@@ -59,8 +59,9 @@ All Control API traffic goes through this package. It encapsulates:
 |---|---|
 | `api.ate-system.svc.cluster.local:443` + authority `api.ate-system.svc` | `cmd/ax-server/main.go` (`--substrate-endpoint` / `--substrate-authority` flag defaults), `internal/substrate/client.go` (3×), `deploy/ax-server.yaml`, `test/e2e/manifests/ax-server.yaml`, `test/e2e/harness_test.go` |
 | `atenet-router.ate-system.svc[.cluster.local]` | `internal/controller/reconciler.go` (`defaultRouterServerName`), `internal/tunnel/router_tls.go` (`routerServerName`), `cmd/ax/main.go` (ssh port-forward path), `internal/guest/client.go` (doc comment), `deploy/ax-server.yaml`, `test/e2e/manifests/ax-server.yaml`, `docs/networking.md` |
-| namespace `ate-system` | all of the above + `test/e2e/harness_test.go` (`ateSystemNamespace`), `test/e2e/manifests/credential-policy.yaml` |
-| pod labels `ate.dev/worker-pool` (worker pods) and `app: atenet-egress` (egress gateway) | the `ax-server` NetworkPolicy in `deploy/ax-server.yaml` and `test/e2e/manifests/ax-server.yaml`, which keeps both away from ax-server |
+| `idp.ate-system.svc` | `deploy/k8s-api-proxy.yaml` (`--oidc-issuer-url=https://idp.ate-system.svc` for verifying `actorJwt` tokens) |
+| namespace `ate-system` | all of the above + `test/e2e/harness_test.go` (`ateSystemNamespace`), `test/e2e/manifests/credential-policy.yaml`, `deploy/k8s-api-proxy.yaml` |
+| pod labels `ate.dev/worker-pool` (worker pods) and `app: atenet-egress` (egress gateway) | the `ax-server` NetworkPolicy in `deploy/ax-server.yaml` and `test/e2e/manifests/ax-server.yaml` (keeps both away from ax-server), and the `k8s-api-proxy` NetworkPolicy in `deploy/k8s-api-proxy.yaml` (admits only `atenet-egress`) |
 | `opentelemetry-collector.otel-system.svc:4317` (the collector Substrate's kind overlay deploys, `manifests/ate-install/kind/ate-otel-config.yaml` in Substrate) | `test/e2e/manifests/ax-server.yaml` (`ax-otel-config` ConfigMap). An unreachable address does not fail E2E; ax-server only logs OTLP export errors |
 
 Why it matters: tasks never get a Service/Ingress. Every request to a task is
@@ -129,9 +130,15 @@ instead. No mocking library is in `go.mod`.
   runner supplies a placeholder only for git: `GIT_ASKPASS` is
   `/ax/git-askpass`, a link to the running program, and package `runner`
   answers from `init` when a program that imports it is started under that
-  name (`runner/env.go`). It sets no API key variable, because tools choose a
-  provider by which key is set: a task sets its own placeholders in
-  `spec.env`. A Gateway's spec is never passed into the sandbox.
+  name (`runner/env.go`). When `Gateway.spec.kubernetes` is set, the reconciler
+  passes only the resolved non-secret `KubernetesAccess` in `AX_KUBERNETES_YAML`
+  and `runner` writes `/ax/kubeconfig` with `token: ax-placeholder` and sets
+  `KUBECONFIG` (`runner/kubeconfig.go`), while `ExpandGatewayEgress` adds an
+  `https` egress rule with `actorJwt` injection for `k8s-api-proxy`
+  (`internal/controller/kubeproxy.go`). The runner sets no API key variable,
+  because tools choose a provider by which key is set: a task sets its own
+  placeholders in `spec.env`. `Gateway.spec.egress` is never passed into the
+  sandbox.
 - Readiness: Substrate and the reconciler probe the runner on port 80
   (`/healthz`, `/readyz?check=workspace`, served by `internal/metadata`);
   `/readyz` is 503 until all workspaces are materialized (`docs/sandbox.md`).

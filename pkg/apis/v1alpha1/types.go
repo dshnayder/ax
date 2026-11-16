@@ -37,8 +37,10 @@ const (
 	DefaultAtespace = "default"
 	// TODO: DefaultTaskImage has no @sha256 digest and points to a private repo,
 	// so Substrate rejects it unless overridden via --default-task-image / AX_DEFAULT_TASK_IMAGE.
-	DefaultTaskImage       = "gcr.io/ax-substrate/ate-images/ax-task-runner"
-	DefaultSystemNamespace = "ax-system"
+	DefaultTaskImage         = "gcr.io/ax-substrate/ate-images/ax-task-runner"
+	DefaultSystemNamespace   = "ax-system"
+	DefaultKubeProxyEndpoint = "https://k8s-api-proxy.ax-system.svc"
+	DefaultKubeCluster       = "in-cluster"
 )
 
 // Condition types reported on Task status.
@@ -358,6 +360,9 @@ func (m *Model) UnmarshalYAML(n *yaml.Node) error { return unmarshalYAML(n, m, n
 
 func (g *Gateway) MarshalYAML() (any, error)        { return marshalYAML(g) }
 func (g *Gateway) UnmarshalYAML(n *yaml.Node) error { return unmarshalYAML(n, g, nil) }
+
+func (k *KubernetesAccess) MarshalYAML() (any, error)        { return marshalYAML(k) }
+func (k *KubernetesAccess) UnmarshalYAML(n *yaml.Node) error { return unmarshalYAML(n, k, nil) }
 
 // Workspace binding.
 //

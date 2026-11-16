@@ -51,6 +51,7 @@ func main() {
 		defaultTemplate         string
 		defaultTemplateAtespace string
 		defaultTaskImage        string
+		kubeProxyEndpoint       string
 	)
 
 	flag.StringVar(&listenAddr, "addr", ":8080", "HTTP listen address")
@@ -65,6 +66,7 @@ func main() {
 	flag.StringVar(&defaultTemplate, "template", "default-template", "Default Substrate ActorTemplate name")
 	flag.StringVar(&defaultTemplateAtespace, "template-atespace", v1alpha1.DefaultSystemNamespace, "Default Substrate ActorTemplate atespace")
 	flag.StringVar(&defaultTaskImage, "default-task-image", v1alpha1.DefaultTaskImage, "Container image for tasks that do not set spec.profile.image (env: AX_DEFAULT_TASK_IMAGE)")
+	flag.StringVar(&kubeProxyEndpoint, "kube-proxy-endpoint", v1alpha1.DefaultKubeProxyEndpoint, "Default k8s-api-proxy HTTPS base URL for Gateway spec.kubernetes (env: AX_KUBE_PROXY_ENDPOINT)")
 	flag.Parse()
 
 	if envAddr := os.Getenv("ADDR"); envAddr != "" {
@@ -78,6 +80,9 @@ func main() {
 	}
 	if envImage := os.Getenv("AX_DEFAULT_TASK_IMAGE"); envImage != "" {
 		defaultTaskImage = envImage
+	}
+	if envKubeProxy := os.Getenv("AX_KUBE_PROXY_ENDPOINT"); envKubeProxy != "" {
+		kubeProxyEndpoint = envKubeProxy
 	}
 
 	logger := slog.New(telemetry.NewLogHandler(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})))
@@ -129,6 +134,7 @@ func main() {
 	defer subClient.Close()
 
 	reconciler := controller.NewTaskReconciler(subClient, defaultTemplate, defaultTemplateAtespace, defaultTaskImage)
+	reconciler.KubeProxyEndpoint = kubeProxyEndpoint
 	workspaces := controller.NewWorkspaceManager(subClient, controller.WorkspaceManagerOptions{
 		Locker:           backend,
 		DefaultTaskImage: defaultTaskImage,

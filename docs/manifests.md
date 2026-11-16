@@ -244,6 +244,32 @@ A hostname can name a service inside the cluster, such as `git-mcp.default.svc.c
 
 Substrate checks the rest of a rule's syntax when a task that binds the gateway is created.
 
+### Mediated Kubernetes access (`k8s-api-proxy`)
+
+`spec.kubernetes` grants tasks mediated `kubectl` access through `k8s-api-proxy` without storing cluster credentials in the sandbox or its snapshots.
+
+```yaml
+apiVersion: ax.io/v1alpha1
+kind: Gateway
+metadata:
+  name: k8s-readonly
+  atespace: default
+spec:
+  kubernetes:
+    clusters:
+      - in-cluster
+      - gke_my-project_us-central1_staging
+    defaultCluster: in-cluster
+```
+
+When a task binds this `Gateway`:
+
+- `ax-server` expands `spec.kubernetes` into an `https` egress rule to `k8s-api-proxy` (default `https://k8s-api-proxy.ax-system.svc`) that replaces `Authorization` with a short-lived Agent Substrate `actorJwt`.
+- `ax-task-runner` writes `/ax/kubeconfig` with one context per entry in `clusters` (`["in-cluster"]` when omitted), selects `defaultCluster` as `current-context`, sets a placeholder token that the egress gateway swaps out, and exports `KUBECONFIG=/ax/kubeconfig`.
+- `k8s-api-proxy` verifies the Actor JWT against Substrate's OIDC issuer, enforces policy (`read-only-dry-run` by default), and scrubs `v1/Secret` values before returning responses.
+
+Optional fields `endpoint` and `audience` override the proxy base URL and the Actor JWT audience when a deployment runs a dedicated `k8s-api-proxy` instance.
+
 ## Model
 
 For Google models, store the API key and set `provider: google`.

@@ -24,6 +24,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 ARG TARGETARCH=amd64
+ARG KUBECTL_VERSION=v1.34.2
+RUN curl -fsSL -o /usr/local/bin/kubectl "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${TARGETARCH}/kubectl" \
+    && curl -fsSL -o /tmp/kubectl.sha256 "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${TARGETARCH}/kubectl.sha256" \
+    && echo "$(cat /tmp/kubectl.sha256)  /usr/local/bin/kubectl" | sha256sum --check \
+    && rm -f /tmp/kubectl.sha256 \
+    && chmod 0755 /usr/local/bin/kubectl
+
 COPY bin/linux_${TARGETARCH}/ax-task-runner /usr/local/bin/ax-task-runner
 
 ENTRYPOINT ["/usr/local/bin/ax-task-runner"]

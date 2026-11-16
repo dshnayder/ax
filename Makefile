@@ -24,6 +24,7 @@ IMAGE_TAG ?= latest
 IMAGE_ARCH ?= amd64
 AX_SERVER_IMAGE ?= $(AX_IMAGE_REPO)/ax-server:$(IMAGE_TAG)
 AX_TASK_RUNNER_IMAGE ?= $(AX_IMAGE_REPO)/ax-task-runner:$(IMAGE_TAG)
+KUBE_PROXY_IMAGE ?= $(AX_IMAGE_REPO)/k8s-api-proxy:$(IMAGE_TAG)
 # Image the server runs for tasks that do not set spec.profile.image. Substrate only
 # accepts images pinned by digest, so after `make images` this defaults to the
 # digest it recorded for the pushed ax-task-runner image.
@@ -41,7 +42,7 @@ CONTAINER_CLI ?= $(shell command -v podman 2>/dev/null || command -v docker 2>/d
 BUF := go tool -modfile=hack/tools/buf/go.mod buf
 GOLANGCI_LINT := go tool -modfile=hack/tools/golangci-lint/go.mod golangci-lint
 
-.PHONY: build install images check-image-repo build-claude-code-image push-claude-code-image generate deploy deploy-server deploy-postgres apply-example verify test test-e2e e2e-setup e2e-run e2e-cleanup clean
+.PHONY: build install images check-image-repo build-claude-code-image push-claude-code-image generate deploy deploy-server deploy-postgres deploy-kube-proxy apply-example verify test test-e2e e2e-setup e2e-run e2e-cleanup clean
 
 ## --------------------------------------
 ## Build Targets
@@ -140,6 +141,11 @@ deploy-server: check-image-repo
 	sed -e 's|$${AX_SERVER_IMAGE}|$(AX_SERVER_IMAGE)|g' \
 		-e 's|$${AX_DEFAULT_TASK_IMAGE}|$(AX_DEFAULT_TASK_IMAGE)|g' \
 		deploy/ax-server.yaml | kubectl apply -f -
+
+deploy-kube-proxy: check-image-repo
+	@echo "==> Deploying k8s-api-proxy ($(KUBE_PROXY_IMAGE))..."
+	sed -e 's|$${KUBE_PROXY_IMAGE}|$(KUBE_PROXY_IMAGE)|g' \
+		deploy/k8s-api-proxy.yaml | kubectl apply -f -
 
 # Apply example task and resources
 apply-example:

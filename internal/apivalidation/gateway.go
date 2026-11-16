@@ -17,11 +17,19 @@ package apivalidation
 import (
 	"fmt"
 	"net/netip"
+	"net/url"
+	"regexp"
+	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/google/ax/pkg/apis/v1alpha1"
 	ateapipb "go.ate.dev/substrate/api/ateapi/v1"
 )
+
+var kubeClusterIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,252}$`)
+
+const maxJWTAudienceBytes = 512
 
 // ValidateGateway reports the first problem with a gateway that would make it
 // unusable. It is called by the API server before saving. Agent Substrate
@@ -55,6 +63,68 @@ func ValidateGateway(g *v1alpha1.Gateway) error {
 		// Unlike http and https, passthrough has no default port.
 		if kind == "tlsPassthrough" && ports.GetAll() == nil && len(ports.GetNumbers()) == 0 {
 			return fmt.Errorf("%s.ports: required, set numbers or all", field)
+		}
+	}
+	if err := validateKubernetesAccess(g.GetSpec().GetKubernetes()); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateKubernetesAccess(k *v1alpha1.KubernetesAccess) error {
+	if k == nil {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(k.GetClusters()))
+	for i, c := range k.GetClusters() {
+		if !kubeClusterIDPattern.MatchString(c) {
+			return fmt.Errorf("spec.kubernetes.clusters[%d]: invalid cluster ID %q", i, c)
+		}
+		if _, dup := seen[c]; dup {
+			return fmt.Errorf("spec.kubernetes.clusters[%d]: duplicate cluster ID %q", i, c)
+		}
+		seen[c] = struct{}{}
+	}
+	if def := k.GetDefaultCluster(); def != "" {
+		if !kubeClusterIDPattern.MatchString(def) {
+			return fmt.Errorf("spec.kubernetes.defaultCluster: invalid cluster ID %q", def)
+		}
+		if len(k.GetClusters()) > 0 && !slices.Contains(k.GetClusters(), def) {
+			return fmt.Errorf("spec.kubernetes.defaultCluster: %q must appear in spec.kubernetes.clusters", def)
+		}
+	}
+	if ep := k.GetEndpoint(); ep != "" {
+		if err := validateKubeProxyEndpoint("spec.kubernetes.endpoint", ep); err != nil {
+			return err
+		}
+	}
+	if aud := k.GetAudience(); aud != "" {
+		if len(aud) > maxJWTAudienceBytes || strings.ContainsAny(aud, " \t\r\n\x00") {
+			return fmt.Errorf("spec.kubernetes.audience: invalid audience %q", aud)
+		}
+	}
+	return nil
+}
+
+func validateKubeProxyEndpoint(field, raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return fmt.Errorf("%s: %q must be an https:// base URL without query or fragment", field, raw)
+	}
+	if u.Path != "" && u.Path != "/" {
+		return fmt.Errorf("%s: %q must not include a URL path", field, raw)
+	}
+	host := strings.ToLower(u.Hostname())
+	if reason := deniedEgressHostname(host); reason != "" {
+		return fmt.Errorf("%s: hostname %q is not allowed: %s", field, host, reason)
+	}
+	if strings.HasPrefix(host, "*.") {
+		return fmt.Errorf("%s: wildcard hostname %q is not allowed", field, host)
+	}
+	if p := u.Port(); p != "" {
+		n, err := strconv.Atoi(p)
+		if err != nil || n < 1 || n > 65535 {
+			return fmt.Errorf("%s: invalid port %q", field, p)
 		}
 	}
 	return nil

@@ -51,6 +51,32 @@ message GatewaySpec {
   // ingress model. Once settled, GatewaySpec will import Substrate's ingress
   // proto directly.
   repeated substrate.ateapi.v1.EgressRule egress = 1;
+
+  // kubernetes grants tasks bound to this Gateway mediated kubectl access
+  // through k8s-api-proxy. The control plane expands this block into an HTTPS
+  // egress rule with Actor JWT injection, and the task runner writes a
+  // credential-free kubeconfig inside the sandbox.
+  KubernetesAccess kubernetes = 2;
+}
+
+// KubernetesAccess configures mediated Kubernetes API access through k8s-api-proxy.
+message KubernetesAccess {
+  // Cluster identifiers exposed as contexts in the task's kubeconfig, such as
+  // "in-cluster" or "gke_my-project_us-central1_prod". Defaults to
+  // ["in-cluster"] when empty.
+  repeated string clusters = 1;
+
+  // Context selected as current-context in the task's kubeconfig. Defaults to
+  // the first entry in clusters ("in-cluster" when clusters is empty).
+  string default_cluster = 2;
+
+  // HTTPS base URL of k8s-api-proxy. Defaults to the control plane's configured
+  // proxy endpoint ("https://k8s-api-proxy.ax-system.svc").
+  string endpoint = 3;
+
+  // Audience bound into the Actor JWT injected by the egress gateway. Defaults
+  // to endpoint.
+  string audience = 4;
 }
 
 // --- RPC Request & Response Messages ---

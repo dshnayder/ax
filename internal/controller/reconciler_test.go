@@ -474,6 +474,98 @@ func TestTaskReconciler_GatewayRules(t *testing.T) {
 	}
 }
 
+func TestTaskReconciler_GatewayKubernetesAccess(t *testing.T) {
+	ctx := context.Background()
+
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen: %v", err)
+	}
+	defer lis.Close()
+
+	mockSrv := &mockControlServer{}
+	grpcServer := grpc.NewServer()
+	ateapipb.RegisterControlServer(grpcServer, mockSrv)
+	go grpcServer.Serve(lis)
+	defer grpcServer.Stop()
+
+	client, err := substrate.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("failed to create substrate client: %v", err)
+	}
+	defer client.Close()
+
+	reconciler := controller.NewTaskReconciler(client, "test-template", v1alpha1.DefaultSystemNamespace, "ghcr.io/my-org/runner@sha256:abcd")
+	reconciler.WorkspaceReadyTimeout = 50 * time.Millisecond
+
+	gw := &v1alpha1.Gateway{
+		Metadata: &v1alpha1.ObjectMeta{Name: "k8s-gw", Atespace: "default"},
+		Spec: &v1alpha1.GatewaySpec{
+			Egress: []*ateapipb.EgressRule{{
+				Https: &ateapipb.HttpsRule{Hostnames: []string{"api.github.com"}},
+			}},
+			Kubernetes: &v1alpha1.KubernetesAccess{
+				Clusters:       []string{"in-cluster", "gke_demo_us-central1_prod"},
+				DefaultCluster: "gke_demo_us-central1_prod",
+			},
+		},
+	}
+	task := &v1alpha1.Task{
+		ApiVersion: v1alpha1.APIVersion,
+		Kind:       v1alpha1.KindTask,
+		Metadata:   &v1alpha1.ObjectMeta{Name: "k8s-task", Atespace: "default"},
+		Spec:       &v1alpha1.TaskSpec{Gateway: &v1alpha1.GatewayRef{Name: "k8s-gw"}},
+	}
+
+	if err := reconciler.Suspend(ctx, task, nil, gw); err != nil {
+		t.Fatalf("Suspend failed: %v", err)
+	}
+
+	if len(mockSrv.createdTemplates) != 1 {
+		t.Fatalf("createdTemplates = %d, want 1", len(mockSrv.createdTemplates))
+	}
+	var gotK8sYAML string
+	for _, ev := range mockSrv.createdTemplates[0].GetContainers()[0].GetEnv() {
+		if ev.GetName() == "AX_KUBERNETES_YAML" {
+			gotK8sYAML = ev.GetValue()
+		}
+	}
+	if !strings.Contains(gotK8sYAML, "gke_demo_us-central1_prod") || !strings.Contains(gotK8sYAML, v1alpha1.DefaultKubeProxyEndpoint) {
+		t.Fatalf("AX_KUBERNETES_YAML = %q, want resolved cluster and endpoint", gotK8sYAML)
+	}
+	if strings.Contains(gotK8sYAML, "api.github.com") {
+		t.Fatalf("AX_KUBERNETES_YAML leaked Gateway egress rules: %q", gotK8sYAML)
+	}
+
+	if len(mockSrv.createdEgressPolicies) != 1 {
+		t.Fatalf("createdEgressPolicies = %d, want 1", len(mockSrv.createdEgressPolicies))
+	}
+	rules := mockSrv.createdEgressPolicies[0].GetEgressPolicy().GetRules()
+	if len(rules) != 2 {
+		t.Fatalf("rules len = %d, want 2 (explicit rule + expanded k8s-api-proxy rule)", len(rules))
+	}
+	k8sRule := rules[1].GetHttps()
+	if k8sRule == nil || len(k8sRule.GetHostnames()) != 2 ||
+		k8sRule.GetHostnames()[0] != "k8s-api-proxy.ax-system.svc" ||
+		k8sRule.GetHostnames()[1] != "k8s-api-proxy.ax-system.svc.cluster.local" {
+		t.Fatalf("expanded k8s https rule hostnames = %v", k8sRule.GetHostnames())
+	}
+	headers := k8sRule.GetEffects().GetReplaceHeaders()
+	if len(headers) != 1 || headers[0].GetHeader() != "Authorization" || headers[0].GetPrefix() != "Bearer " ||
+		len(headers[0].GetActorJwt().GetAudiences()) != 1 ||
+		headers[0].GetActorJwt().GetAudiences()[0] != v1alpha1.DefaultKubeProxyEndpoint {
+		t.Fatalf("expanded k8s replaceHeaders = %v", headers)
+	}
+
+	// Resuming after the Gateway was deleted reuses the task's provisioned template and egress policy.
+	if err := reconciler.Resume(ctx, task, nil, nil); err != nil {
+		t.Fatalf("Resume with deleted gateway failed: %v", err)
+	}
+	if len(mockSrv.createdTemplates) != 1 {
+		t.Fatalf("Resume created an extra ActorTemplate (%d total), want 1", len(mockSrv.createdTemplates))
+	}
+}
+
 func TestTaskReconciler_SuspendError(t *testing.T) {
 	ctx := context.Background()
 

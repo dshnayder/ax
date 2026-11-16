@@ -71,6 +71,9 @@ type Config struct {
 	// Workspace is the Workspace resource the task's spec.workspace refers to.
 	// Nil sets up an empty working directory instead.
 	Workspace *v1alpha1.Workspace
+	// Kubernetes configures the credential-free kubeconfig written for tasks
+	// whose Gateway sets spec.kubernetes. Nil writes no kubeconfig.
+	Kubernetes *v1alpha1.KubernetesAccess
 	// CABundle is a file of CA certificates to trust for outbound TLS. If it
 	// exists, the CA environment variables that common tools read are pointed
 	// at it, unless the task sets them. Empty means
@@ -130,7 +133,12 @@ func Run(ctx context.Context, cfg Config) error {
 	for _, e := range cfg.Task.GetSpec().GetEnv() {
 		_ = os.Setenv(e.GetName(), e.GetValue())
 	}
-	setDefaultEnv(cfg.Task, cmp.Or(cfg.CABundle, v1alpha1.EgressTrustBundlePath), linkGitAskpass(workspace.AXDir))
+	caBundle := cmp.Or(cfg.CABundle, v1alpha1.EgressTrustBundlePath)
+	kubeconfigPath, err := writeKubeconfig(workspace.AXDir, cfg.Kubernetes, caBundle)
+	if err != nil {
+		return fmt.Errorf("writing kubeconfig: %w", err)
+	}
+	setDefaultEnv(cfg.Task, caBundle, linkGitAskpass(workspace.AXDir), kubeconfigPath)
 	defer func() {
 		slog.Info("shutting down metadata server")
 		_ = metaServer.Stop(context.Background())

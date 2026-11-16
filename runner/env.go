@@ -66,11 +66,15 @@ func linkGitAskpass(dir string) string {
 //   - the CA variables, pointed at caBundle if that file exists, so that TLS
 //     intercepted on its way out of the sandbox verifies;
 //   - GIT_ASKPASS, pointed at askpass unless that is empty, and
-//     GIT_TERMINAL_PROMPT, so that git never waits for someone to type.
-func setDefaultEnv(task *v1alpha1.Task, caBundle, askpass string) {
+//     GIT_TERMINAL_PROMPT, so that git never waits for someone to type;
+//   - KUBECONFIG, pointed at kubeconfig unless that is empty.
+func setDefaultEnv(task *v1alpha1.Task, caBundle, askpass, kubeconfig string) {
 	env := map[string]string{"GIT_TERMINAL_PROMPT": "0"}
 	if askpass != "" {
 		env["GIT_ASKPASS"] = askpass
+	}
+	if kubeconfig != "" {
+		env["KUBECONFIG"] = kubeconfig
 	}
 	if _, err := os.Stat(caBundle); err == nil {
 		for _, name := range caBundleEnv {

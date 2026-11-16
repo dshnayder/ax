@@ -165,7 +165,12 @@ type GatewaySpec struct {
 	// per-atespace; see agent-substrate/substrate#431) and AX evaluates its
 	// ingress model. Once settled, GatewaySpec will import Substrate's ingress
 	// proto directly.
-	Egress        []*v1.EgressRule `protobuf:"bytes,1,rep,name=egress,proto3" json:"egress,omitempty"`
+	Egress []*v1.EgressRule `protobuf:"bytes,1,rep,name=egress,proto3" json:"egress,omitempty"`
+	// kubernetes grants tasks bound to this Gateway mediated kubectl access
+	// through k8s-api-proxy. The control plane expands this block into an HTTPS
+	// egress rule with Actor JWT injection, and the task runner writes a
+	// credential-free kubeconfig inside the sandbox.
+	Kubernetes    *KubernetesAccess `protobuf:"bytes,2,opt,name=kubernetes,proto3" json:"kubernetes,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -207,6 +212,91 @@ func (x *GatewaySpec) GetEgress() []*v1.EgressRule {
 	return nil
 }
 
+func (x *GatewaySpec) GetKubernetes() *KubernetesAccess {
+	if x != nil {
+		return x.Kubernetes
+	}
+	return nil
+}
+
+// KubernetesAccess configures mediated Kubernetes API access through k8s-api-proxy.
+type KubernetesAccess struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Cluster identifiers exposed as contexts in the task's kubeconfig, such as
+	// "in-cluster" or "gke_my-project_us-central1_prod". Defaults to
+	// ["in-cluster"] when empty.
+	Clusters []string `protobuf:"bytes,1,rep,name=clusters,proto3" json:"clusters,omitempty"`
+	// Context selected as current-context in the task's kubeconfig. Defaults to
+	// the first entry in clusters ("in-cluster" when clusters is empty).
+	DefaultCluster string `protobuf:"bytes,2,opt,name=default_cluster,json=defaultCluster,proto3" json:"default_cluster,omitempty"`
+	// HTTPS base URL of k8s-api-proxy. Defaults to the control plane's configured
+	// proxy endpoint ("https://k8s-api-proxy.ax-system.svc").
+	Endpoint string `protobuf:"bytes,3,opt,name=endpoint,proto3" json:"endpoint,omitempty"`
+	// Audience bound into the Actor JWT injected by the egress gateway. Defaults
+	// to endpoint.
+	Audience      string `protobuf:"bytes,4,opt,name=audience,proto3" json:"audience,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *KubernetesAccess) Reset() {
+	*x = KubernetesAccess{}
+	mi := &file_pkg_apis_v1alpha1_gateway_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *KubernetesAccess) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*KubernetesAccess) ProtoMessage() {}
+
+func (x *KubernetesAccess) ProtoReflect() protoreflect.Message {
+	mi := &file_pkg_apis_v1alpha1_gateway_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use KubernetesAccess.ProtoReflect.Descriptor instead.
+func (*KubernetesAccess) Descriptor() ([]byte, []int) {
+	return file_pkg_apis_v1alpha1_gateway_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *KubernetesAccess) GetClusters() []string {
+	if x != nil {
+		return x.Clusters
+	}
+	return nil
+}
+
+func (x *KubernetesAccess) GetDefaultCluster() string {
+	if x != nil {
+		return x.DefaultCluster
+	}
+	return ""
+}
+
+func (x *KubernetesAccess) GetEndpoint() string {
+	if x != nil {
+		return x.Endpoint
+	}
+	return ""
+}
+
+func (x *KubernetesAccess) GetAudience() string {
+	if x != nil {
+		return x.Audience
+	}
+	return ""
+}
+
 type GetGatewayRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Atespace      string                 `protobuf:"bytes,1,opt,name=atespace,proto3" json:"atespace,omitempty"`
@@ -217,7 +307,7 @@ type GetGatewayRequest struct {
 
 func (x *GetGatewayRequest) Reset() {
 	*x = GetGatewayRequest{}
-	mi := &file_pkg_apis_v1alpha1_gateway_proto_msgTypes[3]
+	mi := &file_pkg_apis_v1alpha1_gateway_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -229,7 +319,7 @@ func (x *GetGatewayRequest) String() string {
 func (*GetGatewayRequest) ProtoMessage() {}
 
 func (x *GetGatewayRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_apis_v1alpha1_gateway_proto_msgTypes[3]
+	mi := &file_pkg_apis_v1alpha1_gateway_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -242,7 +332,7 @@ func (x *GetGatewayRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetGatewayRequest.ProtoReflect.Descriptor instead.
 func (*GetGatewayRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_apis_v1alpha1_gateway_proto_rawDescGZIP(), []int{3}
+	return file_pkg_apis_v1alpha1_gateway_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *GetGatewayRequest) GetAtespace() string {
@@ -268,7 +358,7 @@ type ListGatewaysRequest struct {
 
 func (x *ListGatewaysRequest) Reset() {
 	*x = ListGatewaysRequest{}
-	mi := &file_pkg_apis_v1alpha1_gateway_proto_msgTypes[4]
+	mi := &file_pkg_apis_v1alpha1_gateway_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -280,7 +370,7 @@ func (x *ListGatewaysRequest) String() string {
 func (*ListGatewaysRequest) ProtoMessage() {}
 
 func (x *ListGatewaysRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_apis_v1alpha1_gateway_proto_msgTypes[4]
+	mi := &file_pkg_apis_v1alpha1_gateway_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -293,7 +383,7 @@ func (x *ListGatewaysRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListGatewaysRequest.ProtoReflect.Descriptor instead.
 func (*ListGatewaysRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_apis_v1alpha1_gateway_proto_rawDescGZIP(), []int{4}
+	return file_pkg_apis_v1alpha1_gateway_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *ListGatewaysRequest) GetAtespace() string {
@@ -312,7 +402,7 @@ type ListGatewaysResponse struct {
 
 func (x *ListGatewaysResponse) Reset() {
 	*x = ListGatewaysResponse{}
-	mi := &file_pkg_apis_v1alpha1_gateway_proto_msgTypes[5]
+	mi := &file_pkg_apis_v1alpha1_gateway_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -324,7 +414,7 @@ func (x *ListGatewaysResponse) String() string {
 func (*ListGatewaysResponse) ProtoMessage() {}
 
 func (x *ListGatewaysResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_apis_v1alpha1_gateway_proto_msgTypes[5]
+	mi := &file_pkg_apis_v1alpha1_gateway_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -337,7 +427,7 @@ func (x *ListGatewaysResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListGatewaysResponse.ProtoReflect.Descriptor instead.
 func (*ListGatewaysResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_apis_v1alpha1_gateway_proto_rawDescGZIP(), []int{5}
+	return file_pkg_apis_v1alpha1_gateway_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *ListGatewaysResponse) GetGateways() []*Gateway {
@@ -356,7 +446,7 @@ type CreateGatewayRequest struct {
 
 func (x *CreateGatewayRequest) Reset() {
 	*x = CreateGatewayRequest{}
-	mi := &file_pkg_apis_v1alpha1_gateway_proto_msgTypes[6]
+	mi := &file_pkg_apis_v1alpha1_gateway_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -368,7 +458,7 @@ func (x *CreateGatewayRequest) String() string {
 func (*CreateGatewayRequest) ProtoMessage() {}
 
 func (x *CreateGatewayRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_apis_v1alpha1_gateway_proto_msgTypes[6]
+	mi := &file_pkg_apis_v1alpha1_gateway_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -381,7 +471,7 @@ func (x *CreateGatewayRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateGatewayRequest.ProtoReflect.Descriptor instead.
 func (*CreateGatewayRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_apis_v1alpha1_gateway_proto_rawDescGZIP(), []int{6}
+	return file_pkg_apis_v1alpha1_gateway_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *CreateGatewayRequest) GetGateway() *Gateway {
@@ -400,7 +490,7 @@ type UpdateGatewayRequest struct {
 
 func (x *UpdateGatewayRequest) Reset() {
 	*x = UpdateGatewayRequest{}
-	mi := &file_pkg_apis_v1alpha1_gateway_proto_msgTypes[7]
+	mi := &file_pkg_apis_v1alpha1_gateway_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -412,7 +502,7 @@ func (x *UpdateGatewayRequest) String() string {
 func (*UpdateGatewayRequest) ProtoMessage() {}
 
 func (x *UpdateGatewayRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_apis_v1alpha1_gateway_proto_msgTypes[7]
+	mi := &file_pkg_apis_v1alpha1_gateway_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -425,7 +515,7 @@ func (x *UpdateGatewayRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UpdateGatewayRequest.ProtoReflect.Descriptor instead.
 func (*UpdateGatewayRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_apis_v1alpha1_gateway_proto_rawDescGZIP(), []int{7}
+	return file_pkg_apis_v1alpha1_gateway_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *UpdateGatewayRequest) GetGateway() *Gateway {
@@ -445,7 +535,7 @@ type DeleteGatewayRequest struct {
 
 func (x *DeleteGatewayRequest) Reset() {
 	*x = DeleteGatewayRequest{}
-	mi := &file_pkg_apis_v1alpha1_gateway_proto_msgTypes[8]
+	mi := &file_pkg_apis_v1alpha1_gateway_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -457,7 +547,7 @@ func (x *DeleteGatewayRequest) String() string {
 func (*DeleteGatewayRequest) ProtoMessage() {}
 
 func (x *DeleteGatewayRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_apis_v1alpha1_gateway_proto_msgTypes[8]
+	mi := &file_pkg_apis_v1alpha1_gateway_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -470,7 +560,7 @@ func (x *DeleteGatewayRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteGatewayRequest.ProtoReflect.Descriptor instead.
 func (*DeleteGatewayRequest) Descriptor() ([]byte, []int) {
-	return file_pkg_apis_v1alpha1_gateway_proto_rawDescGZIP(), []int{8}
+	return file_pkg_apis_v1alpha1_gateway_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *DeleteGatewayRequest) GetAtespace() string {
@@ -495,7 +585,7 @@ type DeleteGatewayResponse struct {
 
 func (x *DeleteGatewayResponse) Reset() {
 	*x = DeleteGatewayResponse{}
-	mi := &file_pkg_apis_v1alpha1_gateway_proto_msgTypes[9]
+	mi := &file_pkg_apis_v1alpha1_gateway_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -507,7 +597,7 @@ func (x *DeleteGatewayResponse) String() string {
 func (*DeleteGatewayResponse) ProtoMessage() {}
 
 func (x *DeleteGatewayResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_pkg_apis_v1alpha1_gateway_proto_msgTypes[9]
+	mi := &file_pkg_apis_v1alpha1_gateway_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -520,7 +610,7 @@ func (x *DeleteGatewayResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeleteGatewayResponse.ProtoReflect.Descriptor instead.
 func (*DeleteGatewayResponse) Descriptor() ([]byte, []int) {
-	return file_pkg_apis_v1alpha1_gateway_proto_rawDescGZIP(), []int{9}
+	return file_pkg_apis_v1alpha1_gateway_proto_rawDescGZIP(), []int{10}
 }
 
 var File_pkg_apis_v1alpha1_gateway_proto protoreflect.FileDescriptor
@@ -536,9 +626,17 @@ const file_pkg_apis_v1alpha1_gateway_proto_rawDesc = "" +
 	"apiVersion\x12\x12\n" +
 	"\x04kind\x18\x02 \x01(\tR\x04kind\x123\n" +
 	"\bmetadata\x18\x03 \x01(\v2\x17.ax.v1alpha1.ObjectMetaR\bmetadata\x12,\n" +
-	"\x04spec\x18\x04 \x01(\v2\x18.ax.v1alpha1.GatewaySpecR\x04spec\"F\n" +
+	"\x04spec\x18\x04 \x01(\v2\x18.ax.v1alpha1.GatewaySpecR\x04spec\"\x85\x01\n" +
 	"\vGatewaySpec\x127\n" +
-	"\x06egress\x18\x01 \x03(\v2\x1f.substrate.ateapi.v1.EgressRuleR\x06egress\"C\n" +
+	"\x06egress\x18\x01 \x03(\v2\x1f.substrate.ateapi.v1.EgressRuleR\x06egress\x12=\n" +
+	"\n" +
+	"kubernetes\x18\x02 \x01(\v2\x1d.ax.v1alpha1.KubernetesAccessR\n" +
+	"kubernetes\"\x8f\x01\n" +
+	"\x10KubernetesAccess\x12\x1a\n" +
+	"\bclusters\x18\x01 \x03(\tR\bclusters\x12'\n" +
+	"\x0fdefault_cluster\x18\x02 \x01(\tR\x0edefaultCluster\x12\x1a\n" +
+	"\bendpoint\x18\x03 \x01(\tR\bendpoint\x12\x1a\n" +
+	"\baudience\x18\x04 \x01(\tR\baudience\"C\n" +
 	"\x11GetGatewayRequest\x12\x1a\n" +
 	"\batespace\x18\x01 \x01(\tR\batespace\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\"1\n" +
@@ -567,33 +665,35 @@ func file_pkg_apis_v1alpha1_gateway_proto_rawDescGZIP() []byte {
 	return file_pkg_apis_v1alpha1_gateway_proto_rawDescData
 }
 
-var file_pkg_apis_v1alpha1_gateway_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
+var file_pkg_apis_v1alpha1_gateway_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
 var file_pkg_apis_v1alpha1_gateway_proto_goTypes = []any{
 	(*GatewayRef)(nil),            // 0: ax.v1alpha1.GatewayRef
 	(*Gateway)(nil),               // 1: ax.v1alpha1.Gateway
 	(*GatewaySpec)(nil),           // 2: ax.v1alpha1.GatewaySpec
-	(*GetGatewayRequest)(nil),     // 3: ax.v1alpha1.GetGatewayRequest
-	(*ListGatewaysRequest)(nil),   // 4: ax.v1alpha1.ListGatewaysRequest
-	(*ListGatewaysResponse)(nil),  // 5: ax.v1alpha1.ListGatewaysResponse
-	(*CreateGatewayRequest)(nil),  // 6: ax.v1alpha1.CreateGatewayRequest
-	(*UpdateGatewayRequest)(nil),  // 7: ax.v1alpha1.UpdateGatewayRequest
-	(*DeleteGatewayRequest)(nil),  // 8: ax.v1alpha1.DeleteGatewayRequest
-	(*DeleteGatewayResponse)(nil), // 9: ax.v1alpha1.DeleteGatewayResponse
-	(*ObjectMeta)(nil),            // 10: ax.v1alpha1.ObjectMeta
-	(*v1.EgressRule)(nil),         // 11: substrate.ateapi.v1.EgressRule
+	(*KubernetesAccess)(nil),      // 3: ax.v1alpha1.KubernetesAccess
+	(*GetGatewayRequest)(nil),     // 4: ax.v1alpha1.GetGatewayRequest
+	(*ListGatewaysRequest)(nil),   // 5: ax.v1alpha1.ListGatewaysRequest
+	(*ListGatewaysResponse)(nil),  // 6: ax.v1alpha1.ListGatewaysResponse
+	(*CreateGatewayRequest)(nil),  // 7: ax.v1alpha1.CreateGatewayRequest
+	(*UpdateGatewayRequest)(nil),  // 8: ax.v1alpha1.UpdateGatewayRequest
+	(*DeleteGatewayRequest)(nil),  // 9: ax.v1alpha1.DeleteGatewayRequest
+	(*DeleteGatewayResponse)(nil), // 10: ax.v1alpha1.DeleteGatewayResponse
+	(*ObjectMeta)(nil),            // 11: ax.v1alpha1.ObjectMeta
+	(*v1.EgressRule)(nil),         // 12: substrate.ateapi.v1.EgressRule
 }
 var file_pkg_apis_v1alpha1_gateway_proto_depIdxs = []int32{
-	10, // 0: ax.v1alpha1.Gateway.metadata:type_name -> ax.v1alpha1.ObjectMeta
+	11, // 0: ax.v1alpha1.Gateway.metadata:type_name -> ax.v1alpha1.ObjectMeta
 	2,  // 1: ax.v1alpha1.Gateway.spec:type_name -> ax.v1alpha1.GatewaySpec
-	11, // 2: ax.v1alpha1.GatewaySpec.egress:type_name -> substrate.ateapi.v1.EgressRule
-	1,  // 3: ax.v1alpha1.ListGatewaysResponse.gateways:type_name -> ax.v1alpha1.Gateway
-	1,  // 4: ax.v1alpha1.CreateGatewayRequest.gateway:type_name -> ax.v1alpha1.Gateway
-	1,  // 5: ax.v1alpha1.UpdateGatewayRequest.gateway:type_name -> ax.v1alpha1.Gateway
-	6,  // [6:6] is the sub-list for method output_type
-	6,  // [6:6] is the sub-list for method input_type
-	6,  // [6:6] is the sub-list for extension type_name
-	6,  // [6:6] is the sub-list for extension extendee
-	0,  // [0:6] is the sub-list for field type_name
+	12, // 2: ax.v1alpha1.GatewaySpec.egress:type_name -> substrate.ateapi.v1.EgressRule
+	3,  // 3: ax.v1alpha1.GatewaySpec.kubernetes:type_name -> ax.v1alpha1.KubernetesAccess
+	1,  // 4: ax.v1alpha1.ListGatewaysResponse.gateways:type_name -> ax.v1alpha1.Gateway
+	1,  // 5: ax.v1alpha1.CreateGatewayRequest.gateway:type_name -> ax.v1alpha1.Gateway
+	1,  // 6: ax.v1alpha1.UpdateGatewayRequest.gateway:type_name -> ax.v1alpha1.Gateway
+	7,  // [7:7] is the sub-list for method output_type
+	7,  // [7:7] is the sub-list for method input_type
+	7,  // [7:7] is the sub-list for extension type_name
+	7,  // [7:7] is the sub-list for extension extendee
+	0,  // [0:7] is the sub-list for field type_name
 }
 
 func init() { file_pkg_apis_v1alpha1_gateway_proto_init() }
@@ -608,7 +708,7 @@ func file_pkg_apis_v1alpha1_gateway_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_pkg_apis_v1alpha1_gateway_proto_rawDesc), len(file_pkg_apis_v1alpha1_gateway_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   10,
+			NumMessages:   11,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

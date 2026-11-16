@@ -89,3 +89,85 @@ func TestValidateGateway(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateGateway_Kubernetes(t *testing.T) {
+	tests := []struct {
+		name    string
+		k8s     *v1alpha1.KubernetesAccess
+		wantErr string
+	}{
+		{
+			name: "empty kubernetes block uses defaults",
+			k8s:  &v1alpha1.KubernetesAccess{},
+		},
+		{
+			name: "multi-cluster with custom endpoint and audience",
+			k8s: &v1alpha1.KubernetesAccess{
+				Clusters:       []string{"in-cluster", "gke_my-proj_us-central1_prod"},
+				DefaultCluster: "gke_my-proj_us-central1_prod",
+				Endpoint:       "https://k8s-api-proxy.ax-system.svc:8443",
+				Audience:       "https://k8s-api-proxy.ax-system.svc",
+			},
+		},
+		{
+			name:    "invalid cluster ID",
+			k8s:     &v1alpha1.KubernetesAccess{Clusters: []string{"../escape"}},
+			wantErr: "spec.kubernetes.clusters[0]: invalid cluster ID",
+		},
+		{
+			name:    "duplicate cluster ID",
+			k8s:     &v1alpha1.KubernetesAccess{Clusters: []string{"in-cluster", "in-cluster"}},
+			wantErr: "spec.kubernetes.clusters[1]: duplicate cluster ID",
+		},
+		{
+			name: "defaultCluster not in clusters",
+			k8s: &v1alpha1.KubernetesAccess{
+				Clusters:       []string{"in-cluster"},
+				DefaultCluster: "other-cluster",
+			},
+			wantErr: "spec.kubernetes.defaultCluster: \"other-cluster\" must appear in spec.kubernetes.clusters",
+		},
+		{
+			name:    "http endpoint rejected",
+			k8s:     &v1alpha1.KubernetesAccess{Endpoint: "http://k8s-api-proxy.ax-system.svc"},
+			wantErr: "spec.kubernetes.endpoint",
+		},
+		{
+			name:    "endpoint with path rejected",
+			k8s:     &v1alpha1.KubernetesAccess{Endpoint: "https://k8s-api-proxy.ax-system.svc/v1"},
+			wantErr: "must not include a URL path",
+		},
+		{
+			name:    "endpoint ip rejected",
+			k8s:     &v1alpha1.KubernetesAccess{Endpoint: "https://10.0.0.10:8443"},
+			wantErr: "IP addresses cannot be used",
+		},
+		{
+			name:    "wildcard endpoint rejected",
+			k8s:     &v1alpha1.KubernetesAccess{Endpoint: "https://*.ax-system.svc"},
+			wantErr: "wildcard hostname",
+		},
+		{
+			name:    "audience with whitespace rejected",
+			k8s:     &v1alpha1.KubernetesAccess{Audience: "bad aud"},
+			wantErr: "spec.kubernetes.audience",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := apivalidation.ValidateGateway(&v1alpha1.Gateway{
+				Metadata: &v1alpha1.ObjectMeta{Name: "gw-k8s"},
+				Spec:     &v1alpha1.GatewaySpec{Kubernetes: tt.k8s},
+			})
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error = %v, want containing %q", err, tt.wantErr)
+			}
+		})
+	}
+}
