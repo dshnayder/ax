@@ -75,6 +75,9 @@ spec:
             - "--oidc-issuer-url=https://idp.ate-system.svc"
             - "--oidc-audience=https://k8s-api-proxy.ax-system.svc"
             - "--oidc-ca-file=/run/servicedns-ca/trust-bundle.pem"
+            - "--oidc-required-sub-prefix=actor/"
+            - "--oidc-partition-claim=actor\\.ate\\.dev.atespace"
+            - "--oidc-uid-claim=actor\\.ate\\.dev.actorUID"
           ports:
             - containerPort: 8443
               name: https
