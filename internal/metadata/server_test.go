@@ -246,3 +246,108 @@ func TestMetadataServer_MetadataOnlyOnLoopback(t *testing.T) {
 		t.Log("no non-loopback IPv4 address found; skipped the external address check")
 	}
 }
+
+func TestMetadataServer_TokenAuthAndLoopbackGRPCBlock(t *testing.T) {
+	task := &v1alpha1.Task{
+		Metadata: &v1alpha1.ObjectMeta{Name: "token-task", Atespace: "default"},
+		Spec:     &v1alpha1.TaskSpec{Profile: &v1alpha1.Profile{Image: "ghcr.io/test/img"}, Debug: true},
+	}
+	ws := &v1alpha1.Workspace{
+		Metadata: &v1alpha1.ObjectMeta{Name: "token-ws", Atespace: "default"},
+		Spec:     &v1alpha1.WorkspaceSpec{},
+	}
+
+	const secretToken = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	srv := metadata.NewServer(0, task, ws, metadata.ServerOptions{
+		MetadataToken:        secretToken,
+		DisallowLoopbackGRPC: true,
+	})
+	if err := srv.Start(); err != nil {
+		t.Fatalf("failed to start server: %v", err)
+	}
+	defer srv.Stop(context.Background())
+
+	for _, path := range []string{"/metadata/v1alpha1/ax/task", "/metadata/v1alpha1/ax/workspace"} {
+		// Missing token returns 403 Forbidden.
+		resp, err := http.Get(srv.MetadataURL() + path)
+		if err != nil {
+			t.Fatalf("GET %s without token failed: %v", path, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("GET %s without token: got %d, want 403", path, resp.StatusCode)
+		}
+
+		// Wrong token returns 403 Forbidden.
+		badReq, err := http.NewRequest(http.MethodGet, srv.MetadataURL()+path, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		badReq.Header.Set(metadata.MetadataTokenHeader, "wrong-token")
+		resp, err = http.DefaultClient.Do(badReq)
+		if err != nil {
+			t.Fatalf("GET %s with wrong token failed: %v", path, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusForbidden {
+			t.Errorf("GET %s with wrong token: got %d, want 403", path, resp.StatusCode)
+		}
+
+		// Valid token returns 200 OK.
+		goodReq, err := http.NewRequest(http.MethodGet, srv.MetadataURL()+path, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		goodReq.Header.Set(metadata.MetadataTokenHeader, secretToken)
+		resp, err = http.DefaultClient.Do(goodReq)
+		if err != nil {
+			t.Fatalf("GET %s with valid token failed: %v", path, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("GET %s with valid token: got %d, want 200", path, resp.StatusCode)
+		}
+	}
+
+	// Loopback gRPC to the probe port is rejected with 403 Forbidden.
+	_, probePort, err := net.SplitHostPort(srv.ProbeAddr())
+	if err != nil {
+		t.Fatalf("parsing ProbeAddr %q: %v", srv.ProbeAddr(), err)
+	}
+	loopbackProbeURL := "http://" + net.JoinHostPort("127.0.0.1", probePort) + "/ateenv.v1alpha.ProcessService/StartProcess"
+	var protocols http.Protocols
+	protocols.SetUnencryptedHTTP2(true)
+	h2cClient := &http.Client{
+		Transport: &http.Transport{
+			Protocols: &protocols,
+		},
+	}
+	grpcReq, err := http.NewRequest(http.MethodPost, loopbackProbeURL, strings.NewReader(""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	grpcReq.Header.Set("Content-Type", "application/grpc")
+	resp, err := h2cClient.Do(grpcReq)
+	if err != nil {
+		t.Fatalf("loopback gRPC HTTP/2 request failed: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("loopback gRPC HTTP/2 request: got %d, want 403", resp.StatusCode)
+	}
+
+	// Standard gRPC client over loopback also fails.
+	grpcConn, err := grpc.NewClient(net.JoinHostPort("127.0.0.1", probePort), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("dialing loopback gRPC: %v", err)
+	}
+	defer grpcConn.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if _, err := ateenvv1alpha.NewProcessServiceClient(grpcConn).StartProcess(ctx, &ateenvv1alpha.StartProcessRequest{
+		Command: []string{"echo", "nope"},
+	}); err == nil {
+		t.Fatal("expected StartProcess over loopback to fail when DisallowLoopbackGRPC is true")
+	}
+}

@@ -389,18 +389,23 @@ func TestE2E_MetadataServerAndGuestExec(t *testing.T) {
 	}
 
 	// 2. The in-sandbox probe server serves health/readiness on port 80, and
-	// the loopback metadata server serves task/workspace metadata at AX_METADATA_URL.
+	// the loopback metadata server serves task/workspace metadata at AX_METADATA_URL
+	// when the caller supplies the guest's /ax/metadata-token.
 	curl := func(url string) string {
 		t.Helper()
 		return env.mustRunAX(t, ns, "ssh", task, "--", "curl", "-sf", url)
+	}
+	curlMeta := func(url string) string {
+		t.Helper()
+		return env.mustRunAX(t, ns, "ssh", task, "--", "sh", "-c", `curl -sf -H "X-AX-Metadata-Token: $(cat /ax/metadata-token)" "$1"`, "_", url)
 	}
 	for _, path := range []string{"/healthz", "/readyz"} {
 		if got := strings.TrimSpace(curl(probeURL + path)); got != "ok" {
 			t.Fatalf("GET %s = %q, want \"ok\"", path, got)
 		}
 	}
-	assertContains(t, "task metadata", curl(metadataURL+"/metadata/v1alpha1/ax/task"), task, "custom-val-123")
-	assertContains(t, "workspace metadata", curl(metadataURL+"/metadata/v1alpha1/ax/workspace"), ws, "hello from workspace")
+	assertContains(t, "task metadata", curlMeta(metadataURL+"/metadata/v1alpha1/ax/task"), task, "custom-val-123")
+	assertContains(t, "workspace metadata", curlMeta(metadataURL+"/metadata/v1alpha1/ax/workspace"), ws, "hello from workspace")
 
 	// 3. `ax ssh` propagates a non-zero guest exit code.
 	if _, err := env.runAX(ns, "ssh", task, "--", "sh", "-c", "exit 17"); err == nil {

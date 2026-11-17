@@ -48,20 +48,37 @@ for agent in "${SAMPLES[@]}"; do
       echo "FAIL: kubectl should not exist in agent container!" >&2
       exit 1
     fi
-    echo "[Container 1: agent] OK: no kubectl binary in agent container"
-    ssh -p 2222 -i /etc/sandbox-ssh/id_ed25519 agent@127.0.0.1 "
-      set -eu
-      if [ -e /root/.hermes ] || command -v hermes >/dev/null 2>&1; then
-        echo \"FAIL: sandbox container must not see /root/.hermes or hermes binary!\" >&2
+    META_AUTH_CODE=$(curl -s -o /dev/null -w "%{http_code}" -H "X-AX-Metadata-Token: $(cat /ax/metadata-token)" http://127.0.0.1:8099/metadata/v1alpha1/ax/task)
+    test "${META_AUTH_CODE}" = "200"
+    echo "[Container 1: agent] OK: no kubectl binary in agent container; /ax/metadata-token -> HTTP ${META_AUTH_CODE}"
+    ssh -T -p 2222 -i /etc/sandbox-ssh/id_ed25519 agent@127.0.0.1 "sh -eu" << "SANDBOX_EOF"
+      if [ -e /root/.hermes ] || command -v hermes >/dev/null 2>&1 || [ -e /ax/metadata-token ]; then
+        echo "FAIL: sandbox container must not see /root/.hermes, hermes binary, or /ax/metadata-token!" >&2
         exit 1
       fi
-      echo \"[Container 2: sandbox over 127.0.0.1:2222] uid=\$(id -un) (\$(id -u)) | OK: /root/.hermes and hermes are isolated from sandbox\"
-      echo \"[Container 2: sandbox] kubectl=\$(kubectl version --client -o yaml | awk '\''/gitVersion:/ {print \$2}'\'') | leeway=\$(leeway version 2>&1 | head -n1)\"
-      kubectl get nodes --no-headers | wc -l | xargs -I{} echo \"[Container 2: sandbox] Visible cluster nodes via k8s-api-proxy: {}\"
-      PW=\$(kubectl get secret ax-postgres -n ax-system -o jsonpath=\"{.data.password}\")
-      echo \"[Container 2: sandbox] Redacted Secret data.password=\${PW}\"
-      test \"\${PW}\" = \"UkVEQUNURUQ=\"
-    "
+      echo "[Container 2: sandbox over 127.0.0.1:2222] uid=$(id -un) ($(id -u)) | OK: /root/.hermes, hermes, and /ax/metadata-token isolated"
+      META_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8099/metadata/v1alpha1/ax/task)
+      echo "[Container 2: sandbox] Loopback metadata 127.0.0.1:8099 HTTP status: ${META_CODE}"
+      test "${META_CODE}" = "403"
+      GRPC_CODE=$(curl -s -o /dev/null -w "%{http_code}" --http2-prior-knowledge -H "Content-Type: application/grpc" http://127.0.0.1:80/ateenv.v1alpha.ProcessService/StartProcess)
+      echo "[Container 2: sandbox] Loopback guest gRPC 127.0.0.1:80 HTTP status: ${GRPC_CODE}"
+      test "${GRPC_CODE}" = "403"
+      if curl -m 2 -s http://169.254.169.254 >/dev/null 2>&1; then
+        echo "FAIL: 169.254.169.254 should be unreachable from sandbox!" >&2
+        exit 1
+      fi
+      echo "[Container 2: sandbox] OK: 169.254.169.254 GKE metadata blocked"
+      if env | grep -Eq "^(AX_TASK_YAML|AX_WORKSPACE_YAML)=" || tr "\0" "\n" < /proc/1/environ | grep -Eq "^(AX_TASK_YAML|AX_WORKSPACE_YAML)="; then
+        echo "FAIL: AX_TASK_YAML or AX_WORKSPACE_YAML leaked into sandbox env!" >&2
+        exit 1
+      fi
+      echo "[Container 2: sandbox] OK: AX_TASK_YAML and AX_WORKSPACE_YAML absent from env and /proc/1/environ"
+      echo "[Container 2: sandbox] kubectl=$(kubectl version --client -o yaml | awk "/gitVersion:/ {print \$2}") | leeway=$(leeway version 2>&1 | head -n1)"
+      kubectl get nodes --no-headers | wc -l | xargs -I{} echo "[Container 2: sandbox] Visible cluster nodes via k8s-api-proxy: {}"
+      PW=$(kubectl get secret ax-postgres -n ax-system -o jsonpath="{.data.password}")
+      echo "[Container 2: sandbox] Redacted Secret data.password=${PW}"
+      test "${PW}" = "UkVEQUNURUQ="
+SANDBOX_EOF
   '
 done
 

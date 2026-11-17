@@ -832,7 +832,11 @@ func TestClient_EnsureActorEgressPolicy_RetriesAborted(t *testing.T) {
 func TestBuildActorTemplate_WithSandboxContainer(t *testing.T) {
 	sandboxImg := "us-central1-docker.pkg.dev/demo/ax-kube-sandbox@sha256:1111111111111111111111111111111111111111111111111111111111111111"
 	tmpl := BuildActorTemplate("default", "two-container-tmpl", "us-central1-docker.pkg.dev/demo/ax-kube-agent@sha256:2222222222222222222222222222222222222222222222222222222222222222", map[string]string{
-		SandboxImageEnv: sandboxImg,
+		SandboxImageEnv:      sandboxImg,
+		"AX_TASK_YAML":       "metadata:\n  name: secret-task\n",
+		"AX_WORKSPACE_YAML":  "metadata:\n  name: secret-ws\n",
+		"AX_KUBERNETES_YAML": "defaultCluster: in-cluster\n",
+		"AGENT_ONLY_SECRET":  "top-secret",
 	}, nil, "", nil)
 	if got := len(tmpl.GetContainers()); got != 2 {
 		t.Fatalf("len(Containers) = %d, want 2", got)
@@ -847,6 +851,20 @@ func TestBuildActorTemplate_WithSandboxContainer(t *testing.T) {
 	}
 	if got := sandbox.GetCommand(); len(got) != 1 || got[0] != DefaultSandboxCommand {
 		t.Errorf("sandbox.Command = %v, want [%s]", got, DefaultSandboxCommand)
+	}
+	for _, ev := range sandbox.GetEnv() {
+		if ev.GetName() != "AX_KUBERNETES_YAML" {
+			t.Errorf("sandbox.Env leaked %q; want only AX_KUBERNETES_YAML", ev.GetName())
+		}
+	}
+	if len(sandbox.GetEnv()) != 1 || sandbox.GetEnv()[0].GetName() != "AX_KUBERNETES_YAML" {
+		t.Errorf("sandbox.Env = %v, want only AX_KUBERNETES_YAML", sandbox.GetEnv())
+	}
+	hasGuestTaskYAML := slices.ContainsFunc(guest.GetEnv(), func(ev *ateapipb.EnvVar) bool {
+		return ev.GetName() == "AX_TASK_YAML"
+	})
+	if !hasGuestTaskYAML {
+		t.Error("guest.Env missing AX_TASK_YAML")
 	}
 	MountRunnerVolume(tmpl, "us-central1-docker.pkg.dev/demo/ax-runner-volume@sha256:3333333333333333333333333333333333333333333333333333333333333333")
 	if got := sandbox.GetCommand(); len(got) != 1 || got[0] != DefaultSandboxCommand {

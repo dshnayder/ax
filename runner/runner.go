@@ -28,10 +28,13 @@ package runner
 import (
 	"cmp"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -131,9 +134,15 @@ func Run(ctx context.Context, cfg Config) error {
 	}
 	slog.Info("initializing AX task runner", "port", port, "workspace", ref.GetName(), "wsPath", wsPath)
 
+	metadataToken, err := writeMetadataToken(workspace.AXDir)
+	if err != nil {
+		return fmt.Errorf("writing metadata token: %w", err)
+	}
 	metaServer := metadata.NewServer(port, cfg.Task, cfg.Workspace, metadata.ServerOptions{
-		WorkspacePath: wsPath,
-		MetadataPort:  metadataPort,
+		WorkspacePath:        wsPath,
+		MetadataPort:         metadataPort,
+		MetadataToken:        metadataToken,
+		DisallowLoopbackGRPC: true,
 	})
 	if err := metaServer.Start(); err != nil {
 		return fmt.Errorf("starting metadata server: %w", err)
@@ -253,4 +262,25 @@ func commandEnv(task *v1alpha1.Task, metadataURL string) []string {
 		env = append(env, fmt.Sprintf("%s=%s", e.GetName(), e.GetValue()))
 	}
 	return env
+}
+
+// writeMetadataToken generates a 32-byte random hex token and writes it to
+// dir/metadata-token with 0600 permissions inside the guest container rootfs.
+func writeMetadataToken(dir string) (string, error) {
+	var raw [32]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", fmt.Errorf("generating metadata token: %w", err)
+	}
+	token := hex.EncodeToString(raw[:])
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", fmt.Errorf("creating %s: %w", dir, err)
+	}
+	dest := filepath.Join(dir, "metadata-token")
+	if info, err := os.Lstat(dest); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("metadata token path %s is a symbolic link", dest)
+	}
+	if err := os.WriteFile(dest, []byte(token), 0o600); err != nil {
+		return "", fmt.Errorf("writing metadata token %s: %w", dest, err)
+	}
+	return token, nil
 }

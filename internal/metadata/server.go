@@ -16,11 +16,13 @@ package metadata
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 	"sync"
 
@@ -30,22 +32,27 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// MetadataTokenHeader is the HTTP header name for loopback metadata authentication.
+const MetadataTokenHeader = "X-AX-Metadata-Token"
+
 // Server is the cloud-style metadata server running inside the task actor container.
 // It runs two listeners. The probe listener on all interfaces serves /healthz and
 // /readyz, multiplexed with the guest gRPC services when debug is enabled. The
 // metadata listener serves the /metadata endpoints on loopback only, so they are
 // reachable from inside the container and nowhere else.
 type Server struct {
-	server         *http.Server
-	metadataServer *http.Server
-	probeAddr      string // bound address of the probe listener, set by Start
-	metadataAddr   string // bound address of the metadata listener, set by Start
-	grpcServer     *grpc.Server
-	grpcCleanup    func()
-	mu             sync.RWMutex
-	task           *v1alpha1.Task
-	workspace      *v1alpha1.Workspace
-	workspaceReady bool
+	server               *http.Server
+	metadataServer       *http.Server
+	probeAddr            string // bound address of the probe listener, set by Start
+	metadataAddr         string // bound address of the metadata listener, set by Start
+	metadataToken        string
+	disallowLoopbackGRPC bool
+	grpcServer           *grpc.Server
+	grpcCleanup          func()
+	mu                   sync.RWMutex
+	task                 *v1alpha1.Task
+	workspace            *v1alpha1.Workspace
+	workspaceReady       bool
 }
 
 // ServerOptions configures optional settings for the metadata and guest server.
@@ -55,6 +62,11 @@ type ServerOptions struct {
 	// MetadataPort is the loopback port for the /metadata endpoints. Zero picks
 	// a free port; read the result from MetadataURL after Start.
 	MetadataPort int
+	// MetadataToken requires callers of the /metadata endpoints to supply this
+	// token in MetadataTokenHeader when non-empty.
+	MetadataToken string
+	// DisallowLoopbackGRPC rejects guest gRPC calls that arrive from a loopback IP.
+	DisallowLoopbackGRPC bool
 }
 
 // NewServer creates a new metadata and guest server serving the task and its
@@ -67,8 +79,10 @@ func NewServer(port int, task *v1alpha1.Task, ws *v1alpha1.Workspace, opts ...Se
 		opt = opts[0]
 	}
 	s := &Server{
-		task:      task,
-		workspace: ws,
+		task:                 task,
+		workspace:            ws,
+		metadataToken:        opt.MetadataToken,
+		disallowLoopbackGRPC: opt.DisallowLoopbackGRPC || opt.MetadataToken != "",
 	}
 
 	// Guest services expose process execution and file access inside the container,
@@ -101,6 +115,10 @@ func NewServer(port int, task *v1alpha1.Task, ws *v1alpha1.Workspace, opts ...Se
 
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if s.grpcServer != nil && r.ProtoMajor == 2 && strings.HasPrefix(r.Header.Get("Content-Type"), "application/grpc") {
+			if s.disallowLoopbackGRPC && isLoopbackRemoteAddr(r.RemoteAddr) {
+				http.Error(w, "guest gRPC service is not accessible over loopback", http.StatusForbidden)
+				return
+			}
 			s.grpcServer.ServeHTTP(w, r)
 			return
 		}
@@ -232,7 +250,36 @@ func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte("ok\n"))
 }
 
+func (s *Server) authorizeMetadata(w http.ResponseWriter, r *http.Request) bool {
+	if s.metadataToken == "" {
+		return true
+	}
+	got := r.Header.Get(MetadataTokenHeader)
+	if subtle.ConstantTimeCompare([]byte(got), []byte(s.metadataToken)) != 1 {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return false
+	}
+	return true
+}
+
+func isLoopbackRemoteAddr(remoteAddr string) bool {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		host = remoteAddr
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	if addr, err := netip.ParseAddr(host); err == nil {
+		return addr.Unmap().IsLoopback()
+	}
+	return false
+}
+
 func (s *Server) handleTask(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeMetadata(w, r) {
+		return
+	}
 	s.mu.RLock()
 	task := s.task
 	s.mu.RUnlock()
@@ -251,6 +298,9 @@ func (s *Server) handleTask(w http.ResponseWriter, r *http.Request) {
 // handleWorkspace serves the bound workspace as YAML, or 404 when the task
 // binds none.
 func (s *Server) handleWorkspace(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeMetadata(w, r) {
+		return
+	}
 	s.mu.RLock()
 	ws := s.workspace
 	s.mu.RUnlock()

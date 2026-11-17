@@ -416,11 +416,18 @@ func BuildActorTemplate(atespace, name, image string, envMap map[string]string, 
 		VolumeMounts: mounts,
 	}}
 	if sandboxImage := strings.TrimSpace(envMap[SandboxImageEnv]); sandboxImage != "" {
+		var sandboxEnv []*ateapipb.EnvVar
+		if k8sYAML, ok := envMap["AX_KUBERNETES_YAML"]; ok && k8sYAML != "" {
+			sandboxEnv = append(sandboxEnv, &ateapipb.EnvVar{
+				Name:  "AX_KUBERNETES_YAML",
+				Value: k8sYAML,
+			})
+		}
 		containers = append(containers, &ateapipb.Container{
 			Name:         "sandbox",
 			Image:        sandboxImage,
 			Command:      []string{DefaultSandboxCommand},
-			Env:          envList,
+			Env:          sandboxEnv,
 			VolumeMounts: mounts,
 		})
 	}

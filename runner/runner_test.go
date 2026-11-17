@@ -357,7 +357,7 @@ func TestRun_SetsUpBoundWorkspace(t *testing.T) {
 		t.Errorf("command cwd = %q, want workspace %q", strings.TrimSpace(string(out)), codePath)
 	}
 
-	// Readiness reflects the workspace, and the metadata server serves it.
+	// Readiness reflects the workspace, and the metadata server requires the token from AXDir.
 	resp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/readyz", h.cfg.Port))
 	if err != nil {
 		t.Fatal(err)
@@ -366,7 +366,24 @@ func TestRun_SetsUpBoundWorkspace(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Errorf("readyz = %d, want 200", resp.StatusCode)
 	}
-	resp, err = http.Get(fmt.Sprintf("http://127.0.0.1:%d/metadata/v1alpha1/ax/workspace", h.cfg.MetadataPort))
+	unauthResp, err := http.Get(fmt.Sprintf("http://127.0.0.1:%d/metadata/v1alpha1/ax/workspace", h.cfg.MetadataPort))
+	if err != nil {
+		t.Fatal(err)
+	}
+	unauthResp.Body.Close()
+	if unauthResp.StatusCode != http.StatusForbidden {
+		t.Errorf("unauthenticated workspace metadata = %d, want 403", unauthResp.StatusCode)
+	}
+	tokenBytes, err := os.ReadFile(filepath.Join(workspace.AXDir, "metadata-token"))
+	if err != nil {
+		t.Fatalf("reading metadata-token: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/metadata/v1alpha1/ax/workspace", h.cfg.MetadataPort), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("X-AX-Metadata-Token", strings.TrimSpace(string(tokenBytes)))
+	resp, err = http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
