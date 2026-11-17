@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/google/ax/internal/apivalidation"
 	"github.com/google/ax/internal/controller"
@@ -59,8 +60,11 @@ type Server struct {
 	workspaces *controller.WorkspaceManager
 	// substrate is the reconciler's client. It is read for the parts of a
 	// task's status owned by its actor, which the store never holds.
-	substrate  *substrate.Client
-	grpcServer *grpc.Server
+	substrate      *substrate.Client
+	grpcServer     *grpc.Server
+	turnsMu        sync.Mutex
+	activeTurns    map[string]int
+	lifecycleLocks map[string]*sync.Mutex
 }
 
 // NewServer creates a new AX API server.
@@ -86,11 +90,13 @@ func NewServer(s store.Store, reconciler *controller.TaskReconciler, opts ...Opt
 	}
 
 	srv := &Server{
-		store:      s,
-		locker:     locker,
-		reconciler: reconciler,
-		workspaces: workspaces,
-		substrate:  reconciler.Client(),
+		store:          s,
+		locker:         locker,
+		reconciler:     reconciler,
+		workspaces:     workspaces,
+		substrate:      reconciler.Client(),
+		activeTurns:    make(map[string]int),
+		lifecycleLocks: make(map[string]*sync.Mutex),
 	}
 	srv.grpcServer = grpc.NewServer(grpc.StatsHandler(telemetry.ServerStatsHandler(func() map[string]grpc.ServiceInfo {
 		return srv.grpcServer.GetServiceInfo()
@@ -104,7 +110,7 @@ func (s *Server) GRPCServer() *grpc.Server {
 	return s.grpcServer
 }
 
-// Handler returns the HTTP handler for the server, routing gRPC and HTTP health checks.
+// Handler returns the HTTP handler for the server, routing gRPC, task execution, and HTTP health checks.
 func (s *Server) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.ProtoMajor == 2 && strings.HasPrefix(r.Header.Get("Content-Type"), "application/grpc") {
@@ -114,6 +120,9 @@ func (s *Server) Handler() http.Handler {
 		if r.URL.Path == "/healthz" {
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte("ok\n"))
+			return
+		}
+		if s.routeTaskHTTP(w, r) {
 			return
 		}
 		http.NotFound(w, r)

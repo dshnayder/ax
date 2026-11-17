@@ -30,3 +30,25 @@ spec:
         ports:
           numbers:
             - 80
+    - http:
+        hostnames:
+          - hindsight-api.kubeagents-system.svc.cluster.local
+          - hindsight-api.kubeagents-system.svc
+        ports:
+          numbers:
+            - 8888
+    - http:
+        hostnames:
+          - platform-agent-credential-proxy.kubeagents-system.svc.cluster.local
+          - platform-agent-credential-proxy.kubeagents-system.svc
+        ports:
+          numbers:
+            - 8765
+        effects:
+          replaceHeaders:
+            - header: Authorization
+              prefix: "Bearer "
+              actorJwt:
+                audiences:
+                  - kubeagents-credential-proxy
+                expirationSeconds: 900

@@ -49,7 +49,7 @@ func ValidateGateway(g *v1alpha1.Gateway) error {
 		}
 		field := fmt.Sprintf("spec.egress[%d].%s", i, kind)
 		credential := len(effects.GetReplaceHeaders()) > 0
-		if credential && kind == "http" {
+		if credential && kind == "http" && !isInClusterActorJWTHttpRule(hostnames, effects) {
 			return fmt.Errorf("%s.effects.replaceHeaders: not allowed on an http rule: the credential would be sent in cleartext", field)
 		}
 		for j, name := range hostnames {
@@ -167,4 +167,24 @@ func isIPAddress(name string) bool {
 	}
 	last := name[strings.LastIndexByte(name, '.')+1:]
 	return last != "" && strings.Trim(last, "0123456789") == ""
+}
+
+// isInClusterActorJWTHttpRule reports whether effects replace headers only with
+// short-lived Actor JWTs bound to in-cluster Kubernetes Service DNS names.
+func isInClusterActorJWTHttpRule(hostnames []string, effects *ateapipb.HttpRuleEffects) bool {
+	if len(hostnames) == 0 || len(effects.GetReplaceHeaders()) == 0 {
+		return false
+	}
+	for _, h := range hostnames {
+		lower := strings.ToLower(h)
+		if !strings.HasSuffix(lower, ".svc") && !strings.HasSuffix(lower, ".svc.cluster.local") {
+			return false
+		}
+	}
+	for _, ch := range effects.GetReplaceHeaders() {
+		if ch.GetActorJwt() == nil || ch.GetCredentialUri() != "" {
+			return false
+		}
+	}
+	return true
 }
