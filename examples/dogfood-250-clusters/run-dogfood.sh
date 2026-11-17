@@ -20,12 +20,13 @@ CONTEXT="${KUBECTL_CONTEXT:-kage-adc}"
 AX_BIN="${AX_BIN:-${HOME}/bin/ax}"
 COUNT="${CLUSTER_COUNT:-250}"
 CONCURRENCY="${CONCURRENCY:-16}"
-IMAGE="${AX_KUBE_AGENT_IMAGE:?AX_KUBE_AGENT_IMAGE (pinned by @sha256:...) is required}"
+IMAGE="${AX_KUBE_AGENT_IMAGE:-us-central1-docker.pkg.dev/agentic-harness-demo/ate-images/ax-kube-agent@sha256:d29dd54b3f606edbe524b41a61bbe0837bbf73edc63794c03560bb03a3ad6cef}"
+SANDBOX_IMAGE="${AX_KUBE_SANDBOX_IMAGE:-us-central1-docker.pkg.dev/agentic-harness-demo/ate-images/ax-kube-sandbox@sha256:b2bfb19845dab25021f863f5b832d134f5dd929af19390e05dc075016bfd9584}"
 
 echo "==> 1. Applying Gateway/kube-agents-cluster-gw on context ${CONTEXT}..."
 "${AX_BIN}" apply -f "${SCRIPT_DIR}/gateway.yaml" --context="${CONTEXT}"
 
-echo "==> 2. Provisioning 1 shared ActorTemplate via cluster-agent-seed (${IMAGE}, limits: cpu=2, memory=2Gi)..."
+echo "==> 2. Provisioning 1 shared 2-container ActorTemplate via cluster-agent-seed (agent=${IMAGE}, sandbox=${SANDBOX_IMAGE}, limits: cpu=2, memory=2Gi)..."
 "${AX_BIN}" apply --context="${CONTEXT}" -f - <<EOF
 apiVersion: ax.io/v1alpha1
 kind: Task
@@ -42,6 +43,9 @@ spec:
         memory: "2Gi"
   gateway:
     name: kube-agents-cluster-gw
+  env:
+    - name: AX_SANDBOX_IMAGE
+      value: ${SANDBOX_IMAGE}
 EOF
 
 SHARED_TEMPLATE="$("${AX_BIN}" get task cluster-agent-seed --context="${CONTEXT}" | awk '/ateActorTemplate:/ {print $2}')"

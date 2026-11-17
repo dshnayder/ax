@@ -39,16 +39,29 @@ for agent in "${SAMPLES[@]}"; do
   "${AX_BIN}" describe task "${agent}" --context="${CONTEXT}" | grep -E 'Name:|State:|Actor:|Template:|WorkspaceReady|Ready'
 done
 
-echo "==> 3. Verifying kube-agents CLIs, skills, and k8s-api-proxy inside ${SAMPLES[*]}..."
+echo "==> 3. Verifying 2-container isolation (agent vs sandbox over 127.0.0.1:2222) and k8s-api-proxy inside ${SAMPLES[*]}..."
 for agent in "${SAMPLES[@]}"; do
   echo "--- Testing inside ${agent} ---"
   "${AX_BIN}" ssh "${agent}" --context="${CONTEXT}" -- env HERMES_DOCKER_EXEC_AS_ROOT=1 sh -ec '
-    echo "CLUSTER_ID=${CLUSTER_ID} | hermes=$(hermes --version 2>&1 | head -n1) | kubectl=$(kubectl version --client -o yaml | awk "/gitVersion:/ {print \$2}") | leeway=$(leeway version 2>&1 | head -n1)"
-    echo "Skills installed: $(ls /root/.hermes/skills | wc -l) skills"
-    kubectl get nodes --no-headers | wc -l | xargs -I{} echo "Visible cluster nodes via k8s-api-proxy: {}"
-    PW=$(kubectl get secret ax-postgres -n ax-system -o jsonpath="{.data.password}")
-    echo "Redacted Secret data.password=${PW}"
-    test "${PW}" = "UkVEQUNURUQ="
+    echo "[Container 1: agent] hermes=$(hermes --version 2>&1 | head -n1) | skills=$(ls /root/.hermes/skills | wc -l)"
+    if command -v kubectl >/dev/null 2>&1; then
+      echo "FAIL: kubectl should not exist in agent container!" >&2
+      exit 1
+    fi
+    echo "[Container 1: agent] OK: no kubectl binary in agent container"
+    ssh -p 2222 -i /etc/sandbox-ssh/id_ed25519 agent@127.0.0.1 "
+      set -eu
+      if [ -e /root/.hermes ] || command -v hermes >/dev/null 2>&1; then
+        echo \"FAIL: sandbox container must not see /root/.hermes or hermes binary!\" >&2
+        exit 1
+      fi
+      echo \"[Container 2: sandbox over 127.0.0.1:2222] uid=\$(id -un) (\$(id -u)) | OK: /root/.hermes and hermes are isolated from sandbox\"
+      echo \"[Container 2: sandbox] kubectl=\$(kubectl version --client -o yaml | awk '\''/gitVersion:/ {print \$2}'\'') | leeway=\$(leeway version 2>&1 | head -n1)\"
+      kubectl get nodes --no-headers | wc -l | xargs -I{} echo \"[Container 2: sandbox] Visible cluster nodes via k8s-api-proxy: {}\"
+      PW=\$(kubectl get secret ax-postgres -n ax-system -o jsonpath=\"{.data.password}\")
+      echo \"[Container 2: sandbox] Redacted Secret data.password=\${PW}\"
+      test \"\${PW}\" = \"UkVEQUNURUQ=\"
+    "
   '
 done
 

@@ -70,9 +70,13 @@ type kubeconfigUserSpec struct {
 	Token string `yaml:"token"`
 }
 
-// writeKubeconfig writes a credential-free kubeconfig under dir for k8s-api-proxy access and
+// WriteKubeconfig writes a credential-free kubeconfig under dir for k8s-api-proxy access and
 // returns its path. It returns ("", nil) when k is nil. The egress gateway replaces the
 // placeholder token with the Actor JWT outside the sandbox.
+func WriteKubeconfig(dir string, k *v1alpha1.KubernetesAccess, caBundle string) (string, error) {
+	return writeKubeconfig(dir, k, caBundle)
+}
+
 func writeKubeconfig(dir string, k *v1alpha1.KubernetesAccess, caBundle string) (string, error) {
 	if k == nil {
 		return "", nil

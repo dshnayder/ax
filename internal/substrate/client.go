@@ -216,6 +216,17 @@ func (c *Client) GetActorTemplate(ctx context.Context, atespace, templateName st
 const (
 	DefaultGuestCommand = "/usr/local/bin/ax-task-runner"
 
+	// SandboxImageEnv names an optional digest-pinned container image for a
+	// second "sandbox" container inside the same ActorTemplate. When set in a
+	// task's environment, BuildActorTemplate adds the "sandbox" container so
+	// the agent container can execute shell commands over loopback SSH
+	// (127.0.0.1:2222) in an isolated root filesystem.
+	SandboxImageEnv = "AX_SANDBOX_IMAGE"
+
+	// DefaultSandboxCommand is the entrypoint of the optional "sandbox"
+	// container when SandboxImageEnv is set.
+	DefaultSandboxCommand = "/usr/local/bin/ax-sandbox-entrypoint"
+
 	// RunnerVolumeName names the read-only image volume that carries the
 	// runner when a template mounts one; see MountRunnerVolume.
 	RunnerVolumeName = "ax-runner"
@@ -384,30 +395,42 @@ func BuildActorTemplate(atespace, name, image string, envMap map[string]string, 
 	}
 	trustBundleDir, trustBundleFile := path.Split(v1alpha1.EgressTrustBundlePath)
 
+	mounts := []*ateapipb.VolumeMount{{
+		Name:      "workspace",
+		MountPath: "/workspace",
+	}, {
+		Name:      "egress-trust-bundle",
+		MountPath: path.Clean(trustBundleDir),
+	}}
+	containers := []*ateapipb.Container{{
+		Name:    "guest",
+		Image:   image,
+		Command: command,
+		Env:     envList,
+		WakeupProbe: &ateapipb.WakeupProbe{
+			HttpGet: &ateapipb.HttpGetAction{
+				Path: "/readyz",
+				Port: 80,
+			},
+		},
+		VolumeMounts: mounts,
+	}}
+	if sandboxImage := strings.TrimSpace(envMap[SandboxImageEnv]); sandboxImage != "" {
+		containers = append(containers, &ateapipb.Container{
+			Name:         "sandbox",
+			Image:        sandboxImage,
+			Command:      []string{DefaultSandboxCommand},
+			Env:          envList,
+			VolumeMounts: mounts,
+		})
+	}
+
 	return &ateapipb.ActorTemplate{
 		Metadata: &ateapipb.ResourceMetadata{
 			Name:     name,
 			Atespace: atespace,
 		},
-		Containers: []*ateapipb.Container{{
-			Name:    "guest",
-			Image:   image,
-			Command: command,
-			Env:     envList,
-			WakeupProbe: &ateapipb.WakeupProbe{
-				HttpGet: &ateapipb.HttpGetAction{
-					Path: "/readyz",
-					Port: 80,
-				},
-			},
-			VolumeMounts: []*ateapipb.VolumeMount{{
-				Name:      "workspace",
-				MountPath: "/workspace",
-			}, {
-				Name:      "egress-trust-bundle",
-				MountPath: path.Clean(trustBundleDir),
-			}},
-		}},
+		Containers: containers,
 		Volumes: []*ateapipb.Volume{{
 			Name:       "workspace",
 			DurableDir: &ateapipb.DurableDirVolumeSource{},
@@ -448,7 +471,9 @@ func MountRunnerVolume(tmpl *ateapipb.ActorTemplate, image string) {
 		Image: &ateapipb.ImageVolumeSource{Reference: image},
 	})
 	for _, c := range tmpl.GetContainers() {
-		c.Command = []string{path.Join(v1alpha1.RunnerMountPath, "ax-task-runner")}
+		if c.GetName() == "guest" {
+			c.Command = []string{path.Join(v1alpha1.RunnerMountPath, "ax-task-runner")}
+		}
 		c.VolumeMounts = append(c.VolumeMounts, &ateapipb.VolumeMount{
 			Name:      RunnerVolumeName,
 			MountPath: v1alpha1.RunnerMountPath,

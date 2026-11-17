@@ -35,20 +35,35 @@ import (
 
 func main() {
 	var (
-		cfg      runner.Config
-		taskFile string
-		wsFile   string
-		k8sFile  string
+		cfg                 runner.Config
+		taskFile            string
+		wsFile              string
+		k8sFile             string
+		writeKubeconfigOnly bool
 	)
 	flag.IntVar(&cfg.Port, "port", runner.DefaultPort, "Port for the probe and guest server")
 	flag.IntVar(&cfg.MetadataPort, "metadata-port", runner.DefaultMetadataPort, "Loopback-only port for the metadata endpoints")
 	flag.StringVar(&taskFile, "task-file", "", "Read the Task YAML from this file instead of AX_TASK_YAML")
 	flag.StringVar(&wsFile, "workspace-file", "", "Read the Workspace YAML from this file instead of AX_WORKSPACE_YAML")
 	flag.StringVar(&k8sFile, "kubernetes-file", "", "Read the KubernetesAccess YAML from this file instead of AX_KUBERNETES_YAML")
+	flag.BoolVar(&writeKubeconfigOnly, "write-kubeconfig-only", false, "Write /ax/kubeconfig from AX_KUBERNETES_YAML and exit")
 	flag.Parse()
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
+
+	var k8s v1alpha1.KubernetesAccess
+	if err := runner.LoadSpec(k8sFile, "AX_KUBERNETES_YAML", &k8s); err != nil {
+		fatal(err)
+	} else if len(k8s.GetClusters()) > 0 || k8s.GetDefaultCluster() != "" || k8s.GetEndpoint() != "" {
+		cfg.Kubernetes = &k8s
+	}
+	if writeKubeconfigOnly {
+		if _, err := runner.WriteKubeconfig("/ax", cfg.Kubernetes, v1alpha1.EgressTrustBundlePath); err != nil {
+			fatal(err)
+		}
+		return
+	}
 
 	var task v1alpha1.Task
 	if err := runner.LoadSpec(taskFile, "AX_TASK_YAML", &task); err != nil {
@@ -62,13 +77,6 @@ func main() {
 		fatal(err)
 	} else if ws.GetMetadata() != nil {
 		cfg.Workspace = &ws
-	}
-
-	var k8s v1alpha1.KubernetesAccess
-	if err := runner.LoadSpec(k8sFile, "AX_KUBERNETES_YAML", &k8s); err != nil {
-		fatal(err)
-	} else if len(k8s.GetClusters()) > 0 || k8s.GetDefaultCluster() != "" || k8s.GetEndpoint() != "" {
-		cfg.Kubernetes = &k8s
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

@@ -828,3 +828,28 @@ func TestClient_EnsureActorEgressPolicy_RetriesAborted(t *testing.T) {
 		t.Errorf("createPolicyCalls = %d, want 2", mock.createPolicyCalls)
 	}
 }
+
+func TestBuildActorTemplate_WithSandboxContainer(t *testing.T) {
+	sandboxImg := "us-central1-docker.pkg.dev/demo/ax-kube-sandbox@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+	tmpl := BuildActorTemplate("default", "two-container-tmpl", "us-central1-docker.pkg.dev/demo/ax-kube-agent@sha256:2222222222222222222222222222222222222222222222222222222222222222", map[string]string{
+		SandboxImageEnv: sandboxImg,
+	}, nil, "", nil)
+	if got := len(tmpl.GetContainers()); got != 2 {
+		t.Fatalf("len(Containers) = %d, want 2", got)
+	}
+	guest := tmpl.GetContainers()[0]
+	sandbox := tmpl.GetContainers()[1]
+	if guest.GetName() != "guest" || sandbox.GetName() != "sandbox" {
+		t.Fatalf("container names = [%q, %q], want [guest, sandbox]", guest.GetName(), sandbox.GetName())
+	}
+	if sandbox.GetImage() != sandboxImg {
+		t.Errorf("sandbox.Image = %q, want %q", sandbox.GetImage(), sandboxImg)
+	}
+	if got := sandbox.GetCommand(); len(got) != 1 || got[0] != DefaultSandboxCommand {
+		t.Errorf("sandbox.Command = %v, want [%s]", got, DefaultSandboxCommand)
+	}
+	MountRunnerVolume(tmpl, "us-central1-docker.pkg.dev/demo/ax-runner-volume@sha256:3333333333333333333333333333333333333333333333333333333333333333")
+	if got := sandbox.GetCommand(); len(got) != 1 || got[0] != DefaultSandboxCommand {
+		t.Errorf("after MountRunnerVolume, sandbox.Command = %v, want [%s]", got, DefaultSandboxCommand)
+	}
+}

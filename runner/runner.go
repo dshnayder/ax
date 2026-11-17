@@ -157,6 +157,7 @@ func Run(ctx context.Context, cfg Config) error {
 	if _, err := workspace.SetupWorkspace(ctx, cfg.Workspace, wsPath); err != nil {
 		return fmt.Errorf("setting up workspace %q: %w", ref.GetName(), err)
 	}
+	_ = os.Chmod(wsPath, 0o777)
 	metaServer.SetWorkspaceReady(true)
 	slog.Info("workspace maiden run setup marked ready", "path", wsPath)
 
