@@ -80,6 +80,7 @@ func NewServer(s store.Store, reconciler *controller.TaskReconciler, opts ...Opt
 	if workspaces == nil {
 		workspaces = controller.NewWorkspaceManager(reconciler.Client(), controller.WorkspaceManagerOptions{
 			Locker:           locker,
+			Store:            s,
 			DefaultTaskImage: reconciler.DefaultTaskImage(),
 		})
 	}
@@ -243,11 +244,6 @@ func (s *Server) CreateTask(ctx context.Context, req *v1alpha1.CreateTaskRequest
 		}
 	}
 
-	effectiveProfile := controller.EffectiveProfile(workspace.GetSpec().GetProfile(), task.GetSpec().GetProfile())
-	if effectiveProfile.GetAteActorTemplate() != "" {
-		return nil, status.Error(codes.Unimplemented, "spec.profile.ateActorTemplate is not supported yet")
-	}
-
 	now := timestamppb.Now()
 	if task.Metadata.CreateTime == nil {
 		task.Metadata.CreateTime = now
@@ -291,13 +287,10 @@ func (s *Server) CreateTask(ctx context.Context, req *v1alpha1.CreateTaskRequest
 	return task, nil
 }
 
-// TODO: Drop these checks once pull-based runner assignment and task retries are wired.
+// TODO: Drop these checks once task retries are wired.
 func firstUnimplementedTaskField(spec *v1alpha1.TaskSpec) string {
 	if spec == nil {
 		return ""
-	}
-	if spec.GetProfile().GetAteActorTemplate() != "" {
-		return "spec.profile.ateActorTemplate"
 	}
 	if spec.GetRetry() != nil {
 		return "spec.retry"
@@ -738,28 +731,9 @@ func setReady(task *v1alpha1.Task, condStatus, reason, message string) {
 	})
 }
 
-// storedStatus returns the part of a task's status that AX owns and stores. The
-// actor name, actor UID, and the state, status detail, and Ready condition that
-// follow from the actor's live state are dropped. st is not modified.
+// storedStatus returns the part of a task's status that AX owns and stores.
 func storedStatus(st *v1alpha1.TaskStatus) *v1alpha1.TaskStatus {
-	out := &v1alpha1.TaskStatus{}
-	if st != nil {
-		out = proto.Clone(st).(*v1alpha1.TaskStatus)
-	}
-	out.Actor = ""
-	out.ActorUid = ""
-	if !v1alpha1.IsAXTaskState(out.State) {
-		out.State = v1alpha1.TaskState_TASK_STATE_UNSPECIFIED
-		out.StatusDetail = nil
-		conds := out.Conditions[:0]
-		for _, c := range out.Conditions {
-			if c.GetType() != v1alpha1.ConditionReady {
-				conds = append(conds, c)
-			}
-		}
-		out.Conditions = conds
-	}
-	return out
+	return store.StoredStatus(st)
 }
 
 // fetchWorkspace loads the Workspace the task binds, or nil when the task

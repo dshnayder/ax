@@ -32,6 +32,7 @@
 #   RECREATE_KIND            Set to true to delete and recreate the Kind cluster
 #   FORCE_INSTALL_SUBSTRATE  Set to true to reinstall Substrate even if the commit is unchanged
 #   SUBSTRATE_IMAGE_REPO     Registry holding Substrate release images (default: ghcr.io/agent-substrate/substrate)
+#   SKIP_REMOTE_KIND         Set to true to not set up the second cluster, ${KIND_CLUSTER_NAME}-remote
 
 set -euo pipefail
 export GOWORK=off
@@ -81,7 +82,7 @@ k() {
 
 # render_manifest substitutes only the AX_* variables below so any other `$`
 # in the manifests is left untouched.
-MANIFEST_VARS=(AX_SYSTEM_NAMESPACE AX_WORKER_REPLICAS AX_SERVER_IMAGE AX_DEFAULT_TASK_IMAGE)
+MANIFEST_VARS=(AX_SYSTEM_NAMESPACE AX_WORKER_REPLICAS AX_SERVER_IMAGE AX_DEFAULT_TASK_IMAGE AX_RUNNER_VOLUME_IMAGE)
 render_manifest() {
   local manifest="${E2E_DIR}/manifests/$1"
   if command -v envsubst > /dev/null 2>&1; then
@@ -256,6 +257,18 @@ for img in "${SUBSTRATE_IMAGES[@]}"; do
 done
 log "Using Substrate ${SUBSTRATE_REF} release images from ${SUBSTRATE_IMAGE_REPO}."
 
+# TestE2E_Promote promotes a task to a second cluster. Set it up first, with
+# this script and one worker, in the same kubeconfig.
+if [[ "${SKIP_REMOTE_KIND:-false}" != "true" ]]; then
+  KIND_CLUSTER_NAME="${KIND_CLUSTER_NAME}-remote" AX_WORKER_REPLICAS=1 SKIP_REMOTE_KIND=true "${BASH_SOURCE[0]}"
+  # Written again below, for this cluster.
+  rm -f "${TMP_DIR}/e2e.env"
+else
+  # The test is skipped without the cluster's context, so drop one that an
+  # earlier setup left.
+  kubectl config --kubeconfig "${KUBECONFIG}" delete-context "${KUBE_CONTEXT}-remote" > /dev/null 2>&1 || true
+fi
+
 # 1. Ensure the Kind cluster and local registry exist.
 if [[ "${RECREATE_KIND:-false}" == "true" ]] || ! kind get clusters 2> /dev/null | grep -qx "${KIND_CLUSTER_NAME}"; then
   log "Creating Kind cluster '${KIND_CLUSTER_NAME}' and registry '${REGISTRY_ADDR}'..."
@@ -328,8 +341,16 @@ docker build -q -t "${REGISTRY_ADDR}/ax-task-runner:base" \
   --build-arg TARGETARCH="${GOARCH}" -f "${REPO_ROOT}/Dockerfile.task-runner" "${REPO_ROOT}" > /dev/null
 AX_DEFAULT_TASK_IMAGE="$(build_and_push "${REGISTRY_ADDR}/ax-task-runner:e2e" \
   --build-arg BASE_IMAGE="${REGISTRY_ADDR}/ax-task-runner:base" -f "${E2E_DIR}/Dockerfile.task-runner.e2e")"
-export AX_SERVER_IMAGE AX_DEFAULT_TASK_IMAGE
-printf '  AX_SERVER_IMAGE=%s\n  AX_DEFAULT_TASK_IMAGE=%s\n' "${AX_SERVER_IMAGE}" "${AX_DEFAULT_TASK_IMAGE}"
+# ax-server mounts the runner volume into every task, so tasks run the runner
+# built here rather than one baked into their image.
+AX_RUNNER_VOLUME_IMAGE="$(build_and_push "${REGISTRY_ADDR}/ax-runner-volume:e2e" \
+  --build-arg TARGETARCH="${GOARCH}" -f "${REPO_ROOT}/Dockerfile.runner-volume")"
+# A pure image (no runner inside) with a stand-in launcher.
+AX_E2E_LAUNCHER_IMAGE="$(build_and_push "${REGISTRY_ADDR}/ax-e2e-launcher:e2e" \
+  -f "${E2E_DIR}/launcher/Dockerfile")"
+export AX_SERVER_IMAGE AX_DEFAULT_TASK_IMAGE AX_RUNNER_VOLUME_IMAGE AX_E2E_LAUNCHER_IMAGE
+printf '  AX_SERVER_IMAGE=%s\n  AX_DEFAULT_TASK_IMAGE=%s\n  AX_RUNNER_VOLUME_IMAGE=%s\n  AX_E2E_LAUNCHER_IMAGE=%s\n' \
+  "${AX_SERVER_IMAGE}" "${AX_DEFAULT_TASK_IMAGE}" "${AX_RUNNER_VOLUME_IMAGE}" "${AX_E2E_LAUNCHER_IMAGE}"
 
 # 5. Deploy Postgres and ax-server. Delete existing workloads and Postgres's
 #    volume first so every run starts from an empty database.
@@ -364,6 +385,7 @@ export AX_SYSTEM_NAMESPACE="${AX_SYSTEM_NAMESPACE}"
 export AX_BIN="${TMP_DIR}/bin/ax"
 export SUBSTRATE_REF="${SUBSTRATE_REF}"
 export SUBSTRATE_COMMIT="${SUBSTRATE_COMMIT}"
+export AX_E2E_LAUNCHER_IMAGE="${AX_E2E_LAUNCHER_IMAGE}"
 EOF
 
 log "Kind E2E environment is ready (configuration written to ${TMP_DIR}/e2e.env)."

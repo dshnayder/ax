@@ -15,6 +15,10 @@
 package tunnel
 
 import (
+	"fmt"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 )
 
@@ -52,5 +56,40 @@ func TestPortForwardRegex(t *testing.T) {
 		if len(match) < 2 || match[1] != c.port {
 			t.Errorf("expected port %q from %q, got %v", c.port, c.log, match)
 		}
+	}
+}
+
+func TestEnsureServerURL(t *testing.T) {
+	// Healthy tunnels are already recorded for two AX installations in one
+	// cluster, so no kubectl runs. The first is recorded without a namespace,
+	// as tunnels were before the namespace was part of the file name.
+	t.Setenv("AX_HOME", t.TempDir())
+	urls := map[string]string{}
+	for _, namespace := range []string{"", "ax-remote"} {
+		healthz := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+		t.Cleanup(healthz.Close)
+		port := healthz.Listener.Addr().(*net.TCPAddr).Port
+		if err := SaveTunnel(&TunnelInfo{Context: "kind-local", Namespace: namespace, Port: port}); err != nil {
+			t.Fatal(err)
+		}
+		urls[namespace] = fmt.Sprintf("http://127.0.0.1:%d", port)
+	}
+	// With IgnoreEnv, neither variable decides which installation is reached.
+	t.Setenv("AX_SERVER", "http://explicit:8080")
+	t.Setenv("AX_SYSTEM_NAMESPACE", "ax-remote")
+
+	// Each namespace has its own tunnel.
+	for _, namespace := range []string{"", "ax-remote"} {
+		if got, err := EnsureServerURL(Options{Context: "kind-local", Namespace: namespace, IgnoreEnv: true}); err != nil || got != urls[namespace] {
+			t.Errorf("EnsureServerURL(namespace %q) = %q, %v; want %q", namespace, got, err, urls[namespace])
+		}
+	}
+
+	// Stopping the context's tunnels stops both.
+	if err := StopTunnelByContext("kind-local"); err != nil {
+		t.Fatal(err)
+	}
+	if tunnels, err := ListTunnels(); err != nil || len(tunnels) != 0 {
+		t.Errorf("expected no tunnels after stopping the context's, got %v, error %v", tunnels, err)
 	}
 }

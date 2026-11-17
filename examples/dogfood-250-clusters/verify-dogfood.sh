@@ -17,14 +17,21 @@ set -euo pipefail
 
 CONTEXT="${KUBECTL_CONTEXT:-kage-adc}"
 AX_BIN="${AX_BIN:-${HOME}/bin/ax}"
-SAMPLES=("cluster-agent-001" "cluster-agent-125" "cluster-agent-250")
+SAMPLES=(
+  "cluster-agent-001"
+  "cluster-agent-050"
+  "cluster-agent-100"
+  "cluster-agent-150"
+  "cluster-agent-200"
+  "cluster-agent-250"
+)
 
-echo "==> 1. Verifying 250 Cluster Agent Tasks (Actors) and 3 Worker Pods..."
+echo "==> 1. Verifying 250 Cluster Agent Tasks (sharing 1 ActorTemplate) and 3 Worker Pods..."
 kubectl --context="${CONTEXT}" -n ate-system get pods -l ate.dev/worker-pool=gvisor-pool -o wide
 kubectl --context="${CONTEXT}" -n ax-system exec statefulset/ax-postgres -- \
-  psql -U ax -d ax -c "SELECT count(*) AS total_cluster_agents, data->'status'->>'state' AS state FROM tasks WHERE name LIKE 'cluster-agent-%' GROUP BY 2;"
+  psql -U ax -d ax -c "SELECT count(*) AS total_cluster_agents, count(DISTINCT data->'status'->>'ateActorTemplate') AS distinct_templates, min(data->'status'->>'ateActorTemplate') AS shared_template FROM tasks WHERE name LIKE 'cluster-agent-%' AND name != 'cluster-agent-seed';"
 
-echo "==> 2. Resuming 3 Cluster Agents concurrently (${SAMPLES[*]}) across the 3 Workers..."
+echo "==> 2. Resuming ${#SAMPLES[@]} Cluster Agents concurrently (${SAMPLES[*]}) across the 3 Workers..."
 for agent in "${SAMPLES[@]}"; do
   "${AX_BIN}" resume task "${agent}" --context="${CONTEXT}" &
 done

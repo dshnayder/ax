@@ -1469,11 +1469,6 @@ func TestCreateTask_RejectsUnimplementedFields(t *testing.T) {
 		wantField string
 	}{
 		{
-			name:      "ateActorTemplate",
-			spec:      &v1alpha1.TaskSpec{Profile: &v1alpha1.Profile{AteActorTemplate: "user-tpl"}},
-			wantField: "spec.profile.ateActorTemplate is not supported yet",
-		},
-		{
 			name:      "retry",
 			spec:      &v1alpha1.TaskSpec{Retry: &v1alpha1.RetryConfig{MaxRetries: 2}},
 			wantField: "spec.retry is not supported yet",
@@ -1505,21 +1500,31 @@ func TestCreateTask_RejectsUnimplementedFields(t *testing.T) {
 	}
 
 	// When a Workspace in the store defines a profile with ateActorTemplate:
-	// - A task omitting spec.profile inherits the Workspace's profile and is rejected with Unimplemented.
+	// - A task omitting spec.profile inherits the Workspace's ateActorTemplate.
 	// - A task setting its own spec.profile (e.g. resources only) ignores Workspace.spec.profile
 	//   completely and succeeds.
+	if _, err := sub.CreateActorTemplate(ctx, &ateapipb.CreateActorTemplateRequest{
+		ActorTemplate: &ateapipb.ActorTemplate{
+			Metadata: &ateapipb.ResourceMetadata{Atespace: "default", Name: "ws-user-tpl"},
+		},
+	}); err != nil {
+		t.Fatalf("CreateActorTemplate: %v", err)
+	}
 	if err := st.SaveWorkspace(ctx, &v1alpha1.Workspace{
 		Metadata: &v1alpha1.ObjectMeta{Name: "ws-tpl", Atespace: "default"},
 		Spec:     &v1alpha1.WorkspaceSpec{Profile: &v1alpha1.Profile{AteActorTemplate: "ws-user-tpl"}},
 	}); err != nil {
 		t.Fatalf("SaveWorkspace: %v", err)
 	}
-	_, err = srv.CreateTask(ctx, &v1alpha1.CreateTaskRequest{Task: &v1alpha1.Task{
+	inheritedTask, err := srv.CreateTask(ctx, &v1alpha1.CreateTaskRequest{Task: &v1alpha1.Task{
 		Metadata: &v1alpha1.ObjectMeta{Name: "inherits-ws-tpl"},
 		Spec:     &v1alpha1.TaskSpec{Workspace: &v1alpha1.WorkspaceRef{Name: "ws-tpl"}},
 	}})
-	if status.Code(err) != codes.Unimplemented {
-		t.Fatalf("CreateTask inheriting workspace ateActorTemplate: got %v, want Unimplemented", err)
+	if err != nil {
+		t.Fatalf("CreateTask inheriting workspace ateActorTemplate failed: %v", err)
+	}
+	if got := inheritedTask.GetStatus().GetAteActorTemplate(); got != "ws-user-tpl" {
+		t.Fatalf("AteActorTemplate = %q, want ws-user-tpl", got)
 	}
 
 	overrideTask, err := srv.CreateTask(ctx, &v1alpha1.CreateTaskRequest{Task: &v1alpha1.Task{

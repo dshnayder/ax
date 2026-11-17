@@ -49,6 +49,9 @@ type Options struct {
 	Service   string // default: ax-server
 	Target    string // e.g. "pod/name" or "svc/name" (overrides Service if set)
 	Port      int    // remote port, default: 8080
+	// IgnoreEnv skips AX_SERVER and AX_SYSTEM_NAMESPACE, which describe the
+	// cluster a command runs against, when resolving another cluster.
+	IgnoreEnv bool
 }
 
 func SanitizeContext(name string) string {
@@ -80,12 +83,24 @@ func TunnelDir() (string, error) {
 	return p, os.MkdirAll(p, 0755)
 }
 
-func GetTunnel(ctxName string) (*TunnelInfo, error) {
+// tunnelKey names the state and log files of the tunnel to namespace in a
+// context, so that a context can have a tunnel to each AX installation in it.
+// The default namespace keeps the name that every tunnel had before the
+// namespace was part of it.
+func tunnelKey(ctxName, namespace string) string {
+	key := SanitizeContext(ctxName)
+	if namespace != "" && namespace != v1alpha1.DefaultSystemNamespace {
+		key += "." + SanitizeContext(namespace)
+	}
+	return key
+}
+
+func GetTunnel(ctxName, namespace string) (*TunnelInfo, error) {
 	dir, err := TunnelDir()
 	if err != nil {
 		return nil, err
 	}
-	statePath := filepath.Join(dir, SanitizeContext(ctxName)+".json")
+	statePath := filepath.Join(dir, tunnelKey(ctxName, namespace)+".json")
 	data, err := os.ReadFile(statePath)
 	if err != nil {
 		return nil, err
@@ -102,7 +117,7 @@ func SaveTunnel(info *TunnelInfo) error {
 	if err != nil {
 		return err
 	}
-	statePath := filepath.Join(dir, SanitizeContext(info.Context)+".json")
+	statePath := filepath.Join(dir, tunnelKey(info.Context, info.Namespace)+".json")
 	data, err := json.MarshalIndent(info, "", "  ")
 	if err != nil {
 		return err
@@ -122,17 +137,24 @@ func StopTunnel(info *TunnelInfo) error {
 
 	dir, err := TunnelDir()
 	if err == nil {
-		_ = os.Remove(filepath.Join(dir, SanitizeContext(info.Context)+".json"))
+		_ = os.Remove(filepath.Join(dir, tunnelKey(info.Context, info.Namespace)+".json"))
 	}
 	return nil
 }
 
+// StopTunnelByContext stops the context's tunnels, in every namespace.
 func StopTunnelByContext(ctxName string) error {
-	info, err := GetTunnel(ctxName)
+	tunnels, err := ListTunnels()
 	if err != nil {
 		return err
 	}
-	return StopTunnel(info)
+	err = os.ErrNotExist
+	for _, info := range tunnels {
+		if info.Context == ctxName {
+			err = StopTunnel(info)
+		}
+	}
+	return err
 }
 
 func ListTunnels() ([]*TunnelInfo, error) {
@@ -184,7 +206,7 @@ func EnsureServerURL(opts Options) (string, error) {
 	if opts.ServerURL != "" {
 		return opts.ServerURL, nil
 	}
-	if env := os.Getenv("AX_SERVER"); env != "" {
+	if env := os.Getenv("AX_SERVER"); env != "" && !opts.IgnoreEnv {
 		return env, nil
 	}
 
@@ -195,7 +217,7 @@ func EnsureServerURL(opts Options) (string, error) {
 	}
 
 	if opts.Namespace == "" {
-		if envNs := os.Getenv("AX_SYSTEM_NAMESPACE"); envNs != "" {
+		if envNs := os.Getenv("AX_SYSTEM_NAMESPACE"); envNs != "" && !opts.IgnoreEnv {
 			opts.Namespace = envNs
 		} else {
 			opts.Namespace = v1alpha1.DefaultSystemNamespace
@@ -209,7 +231,7 @@ func EnsureServerURL(opts Options) (string, error) {
 	}
 
 	// Check for existing active tunnel
-	if existing, err := GetTunnel(ctxName); err == nil && existing != nil {
+	if existing, err := GetTunnel(ctxName, opts.Namespace); err == nil && existing != nil {
 		// Empty Namespace/Service means the tunnel was recorded before these fields
 		// existed; treat it as matching for backward compatibility.
 		sameTarget := (existing.Namespace == "" || existing.Namespace == opts.Namespace) &&
@@ -226,12 +248,7 @@ func EnsureServerURL(opts Options) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("creating tunnel directory: %w", err)
 	}
-	logPath := filepath.Join(dir, SanitizeContext(ctxName)+".log")
-	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
-	if err != nil {
-		return "", fmt.Errorf("opening tunnel log: %w", err)
-	}
-	defer logFile.Close()
+	logPath := filepath.Join(dir, tunnelKey(ctxName, opts.Namespace)+".log")
 
 	var kArgs []string
 	if ctxName != "" {
@@ -243,59 +260,100 @@ func EnsureServerURL(opts Options) (string, error) {
 	}
 	kArgs = append(kArgs, "port-forward", "-n", opts.Namespace, targetRes, fmt.Sprintf(":%d", opts.Port))
 
-	cmd := exec.Command("kubectl", kArgs...)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Stdout = logFile
-	cmd.Stderr = logFile
-
-	if err := cmd.Start(); err != nil {
-		return "", fmt.Errorf("spawning kubectl port-forward for context %q: %w", ctxName, err)
+	kubectlBin, err := resolveKubectl(context.Background())
+	if err != nil {
+		return "", err
 	}
 
-	// Wait for port assignment from log output
-	localPort := 0
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		time.Sleep(50 * time.Millisecond)
-
-		logData, err := os.ReadFile(logPath)
-		if err != nil {
-			continue
+	var (
+		cmd       *exec.Cmd
+		localPort int
+		lastErr   error
+	)
+	for attempt := 0; attempt < 6; attempt++ {
+		if attempt > 0 {
+			time.Sleep(time.Duration(attempt) * time.Second)
 		}
-		if match := portForwardRegex.FindStringSubmatch(string(logData)); len(match) > 1 {
-			p, err := strconv.Atoi(match[1])
-			if err == nil && p > 0 {
-				localPort = p
+		logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+		if err != nil {
+			return "", fmt.Errorf("opening tunnel log: %w", err)
+		}
+
+		cmd = exec.Command(kubectlBin, kArgs...)
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+		cmd.Stdout = logFile
+		cmd.Stderr = logFile
+
+		startErr := cmd.Start()
+		_ = logFile.Close()
+		if startErr != nil {
+			return "", fmt.Errorf("spawning kubectl port-forward for context %q: %w", ctxName, startErr)
+		}
+
+		exited := make(chan struct{})
+		go func(c *exec.Cmd) {
+			_ = c.Wait()
+			close(exited)
+		}(cmd)
+
+		localPort = 0
+		earlyExit := false
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			time.Sleep(50 * time.Millisecond)
+
+			logData, _ := os.ReadFile(logPath)
+			if match := portForwardRegex.FindStringSubmatch(string(logData)); len(match) > 1 {
+				if p, err := strconv.Atoi(match[1]); err == nil && p > 0 {
+					localPort = p
+					break
+				}
+			}
+
+			select {
+			case <-exited:
+				logData, _ = os.ReadFile(logPath)
+				lastErr = fmt.Errorf("kubectl port-forward exited for context %q: %s", ctxName, strings.TrimSpace(string(logData)))
+				earlyExit = true
+			default:
+			}
+			if earlyExit {
 				break
 			}
 		}
 
-		// Check if command exited prematurely
-		if err := syscall.Kill(cmd.Process.Pid, 0); err != nil {
-			return "", fmt.Errorf("kubectl port-forward exited for context %q: %s", ctxName, strings.TrimSpace(string(logData)))
+		if localPort == 0 && !earlyExit {
+			_ = cmd.Process.Kill()
+			<-exited
+			logData, _ := os.ReadFile(logPath)
+			lastErr = fmt.Errorf("timeout waiting for kubectl port-forward on context %q: %s", ctxName, strings.TrimSpace(string(logData)))
+		}
+
+		if localPort > 0 {
+			healthy := false
+			healthDeadline := time.Now().Add(3 * time.Second)
+			for time.Now().Before(healthDeadline) {
+				if IsTunnelHealthy(localPort) {
+					healthy = true
+					break
+				}
+				time.Sleep(100 * time.Millisecond)
+			}
+			if healthy {
+				lastErr = nil
+				break
+			}
+			_ = cmd.Process.Kill()
+			<-exited
+			lastErr = fmt.Errorf("tunnel started on port %d but health check failed for context %q", localPort, ctxName)
+		}
+
+		if lastErr != nil && !isTransientPortForwardErr(lastErr.Error()) {
+			return "", lastErr
 		}
 	}
-
-	if localPort == 0 {
-		_ = cmd.Process.Kill()
-		logData, _ := os.ReadFile(logPath)
-		return "", fmt.Errorf("timeout waiting for kubectl port-forward on context %q: %s", ctxName, strings.TrimSpace(string(logData)))
-	}
-
-	// Wait for healthz to respond
-	healthy := false
-	healthDeadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(healthDeadline) {
-		if IsTunnelHealthy(localPort) {
-			healthy = true
-			break
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-
-	if !healthy {
-		_ = cmd.Process.Kill()
-		return "", fmt.Errorf("tunnel started on port %d but health check failed for context %q", localPort, ctxName)
+	if lastErr != nil {
+		return "", lastErr
 	}
 
 	info := &TunnelInfo{
@@ -309,6 +367,24 @@ func EnsureServerURL(opts Options) (string, error) {
 	_ = SaveTunnel(info)
 
 	return fmt.Sprintf("http://127.0.0.1:%d", localPort), nil
+}
+
+func isTransientPortForwardErr(msg string) bool {
+	lower := strings.ToLower(msg)
+	for _, sub := range []string{
+		"pod not found",
+		"unable to upgrade connection",
+		"pod is not running",
+		"container not running",
+		"connection refused",
+		"no endpoints available",
+		"health check failed",
+	} {
+		if strings.Contains(lower, sub) {
+			return true
+		}
+	}
+	return false
 }
 
 // PortForward starts an ephemeral port-forward to a Kubernetes resource (e.g. pod/name or svc/name)
@@ -328,7 +404,11 @@ func PortForward(ctx context.Context, kubeContext, namespace, targetResource str
 	}
 	kArgs = append(kArgs, "port-forward", targetResource, fmt.Sprintf(":%d", remotePort))
 
-	cmd := exec.CommandContext(ctx, "kubectl", kArgs...)
+	kubectlBin, err := resolveKubectl(ctx)
+	if err != nil {
+		return 0, nil, err
+	}
+	cmd := exec.CommandContext(ctx, kubectlBin, kArgs...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	pr, pw, err := os.Pipe()

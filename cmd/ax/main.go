@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"os/signal"
 	"sort"
 	"strings"
@@ -29,6 +30,7 @@ import (
 
 	"github.com/google/ax/internal/guest"
 	"github.com/google/ax/internal/tunnel"
+	"github.com/google/ax/internal/version"
 	"github.com/google/ax/pkg/apis/v1alpha1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -62,13 +64,41 @@ func main() {
 	// Commands that don't require an AX server connection
 	switch cmd {
 	case "version":
-		fmt.Println("ax version v1alpha1")
+		fmt.Printf("ax version %s (API v1alpha1)\n", version.Version)
 		return
 	case "help", "-h", "--help":
 		printUsage()
 		return
 	case "ctx", "context":
-		if err := runContext(kubeContext); err != nil {
+		if err := runContext(kubeContext, cleanArgs, os.Stdout); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	case "local":
+		if err := runLocal(axNamespace, cleanArgs); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	case "install":
+		if err := runInstall(kubeContext, axNamespace, cleanArgs); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	case "uninstall":
+		if err := runUninstall(kubeContext, axNamespace, cleanArgs); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	case "studio":
+		if err := runStudio(axNamespace, cleanArgs); err != nil {
+			var exitErr *exec.ExitError
+			if errors.As(err, &exitErr) && exitErr.ExitCode() > 0 {
+				os.Exit(exitErr.ExitCode())
+			}
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			os.Exit(1)
 		}
@@ -84,6 +114,16 @@ func main() {
 		// start a port-forward to the cluster.
 		if _, _, help, err := parseSSHArgs(cleanArgs); help || err != nil {
 			fmt.Println(sshUsage)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+				os.Exit(1)
+			}
+			return
+		}
+	case "promote":
+		// As for ssh, answer help and usage errors before resolving a server.
+		if flags, err := parsePromoteArgs(cleanArgs); flags.help || err != nil {
+			fmt.Println(promoteUsage)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 				os.Exit(1)
@@ -121,6 +161,8 @@ func main() {
 		err = runSuspend(serverURL, atespace, cleanArgs)
 	case "resume":
 		err = runResume(serverURL, atespace, cleanArgs)
+	case "promote":
+		err = runPromote(serverURL, atespace, cleanArgs)
 	case "delete":
 		err = runDelete(serverURL, atespace, cleanArgs)
 	case "ssh":
@@ -229,11 +271,16 @@ Available Commands:
                           (Ctrl-C is forwarded; press it twice quickly, or Ctrl-\, to exit locally)
   suspend task <name>     Suspend execution of a task and checkpoint state
   resume task <name>      Resume execution of a suspended task
+  promote task <name> --to <context> Promote a task to another cluster
   delete task <name>      Delete a task
   delete workspace <name> Delete a workspace
   delete gateway <name>   Delete a gateway
   delete model <name>     Delete a model
-  ctx, context            Show active Kubernetes context and AX connection
+  local <start|stop|status|delete> Manage local Kubernetes + Substrate + AX environment
+  install                 Install or upgrade AX on a Substrate cluster
+  uninstall               Uninstall AX from a Substrate cluster
+  studio                  Launch the AX Studio local Web UI in your browser
+  ctx, context [name]     List or switch active Kubernetes context
   tunnel <list|stop>      Manage background tunnels to Kubernetes clusters
   version                 Print AX version
 
@@ -857,26 +904,61 @@ func formatAge(d time.Duration) string {
 	return fmt.Sprintf("%dd", int(d.Hours()/24))
 }
 
-func runContext(kubeContext string) error {
-	ctxName, err := tunnel.CurrentContext(kubeContext)
-	if err != nil || ctxName == "" {
-		fmt.Println("No active Kubernetes context detected.")
-		fmt.Println("Fallback server: http://localhost:8080 (or set $AX_SERVER / --server)")
+func runContext(kubeContext string, args []string, out io.Writer) error {
+	if len(args) > 0 && (args[0] == "-h" || args[0] == "--help") {
+		fmt.Fprintln(out, "Usage:\n  ax ctx              List Kubernetes contexts and active AX tunnel status\n  ax ctx <name>       Switch active Kubernetes context in kubeconfig")
+		return nil
+	}
+	if len(args) > 1 {
+		return fmt.Errorf("too many arguments (usage: ax ctx [context-name])")
+	}
+	if len(args) == 1 {
+		if err := tunnel.SetCurrentContext(args[0]); err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "Switched to context %q.\n", args[0])
 		return nil
 	}
 
-	fmt.Printf("Active Kubernetes Context: %s\n", ctxName)
-	if t, err := tunnel.GetTunnel(ctxName); err == nil && t != nil {
-		status := "Healthy"
-		if !tunnel.IsTunnelHealthy(t.Port) {
-			status = "Stale / Not responding"
+	entries, err := tunnel.ListContexts(kubeContext)
+	if err != nil || len(entries) == 0 {
+		ctxName, _ := tunnel.CurrentContext(kubeContext)
+		if ctxName == "" {
+			fmt.Fprintln(out, "No active Kubernetes context detected.")
+			fmt.Fprintln(out, "Fallback server: http://localhost:8080 (or set $AX_SERVER / --server)")
+			return nil
 		}
-		fmt.Printf("AX Tunnel:                 http://127.0.0.1:%d -> %s/svc/%s:8080 (PID: %d, %s)\n",
-			t.Port, t.Namespace, t.Service, t.PID, status)
-	} else {
-		fmt.Println("AX Tunnel:                 No background tunnel running (will auto-connect on next command)")
+		fmt.Fprintf(out, "Active Kubernetes Context: %s\n", ctxName)
+		return nil
 	}
-	return nil
+
+	// A context has a tunnel for each namespace AX has been reached in.
+	tunnels, _ := tunnel.ListTunnels()
+	w := tabwriter.NewWriter(out, 0, 8, 2, ' ', 0)
+	fmt.Fprintln(w, "CURRENT\tNAME\tCLUSTER\tAX TUNNEL")
+	for _, e := range entries {
+		cur := ""
+		if e.Current {
+			cur = "*"
+		}
+		var tunDescs []string
+		for _, t := range tunnels {
+			if t.Context != e.Name {
+				continue
+			}
+			status := "Healthy"
+			if !tunnel.IsTunnelHealthy(t.Port) {
+				status = "Stale"
+			}
+			tunDescs = append(tunDescs, fmt.Sprintf("127.0.0.1:%d -> %s/%s (%s)", t.Port, t.Namespace, t.Service, status))
+		}
+		tunDesc := "-"
+		if len(tunDescs) > 0 {
+			tunDesc = strings.Join(tunDescs, ", ")
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", cur, e.Name, e.Cluster, tunDesc)
+	}
+	return w.Flush()
 }
 
 func runTunnel(args []string) error {

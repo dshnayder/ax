@@ -25,7 +25,33 @@ IMAGE="${AX_KUBE_AGENT_IMAGE:?AX_KUBE_AGENT_IMAGE (pinned by @sha256:...) is req
 echo "==> 1. Applying Gateway/kube-agents-cluster-gw on context ${CONTEXT}..."
 "${AX_BIN}" apply -f "${SCRIPT_DIR}/gateway.yaml" --context="${CONTEXT}"
 
-echo "==> 2. Creating ${COUNT} Cluster Agent Tasks (cluster-agent-001 .. cluster-agent-$(printf '%03d' "${COUNT}")) in parallel (concurrency=${CONCURRENCY})..."
+echo "==> 2. Provisioning 1 shared ActorTemplate via cluster-agent-seed (${IMAGE}, limits: cpu=100m, memory=256Mi)..."
+"${AX_BIN}" apply --context="${CONTEXT}" -f - <<EOF
+apiVersion: ax.io/v1alpha1
+kind: Task
+metadata:
+  name: cluster-agent-seed
+  atespace: default
+spec:
+  debug: true
+  profile:
+    image: ${IMAGE}
+    resources:
+      limits:
+        cpu: "100m"
+        memory: "256Mi"
+  gateway:
+    name: kube-agents-cluster-gw
+EOF
+
+SHARED_TEMPLATE="$("${AX_BIN}" get task cluster-agent-seed --context="${CONTEXT}" | awk '/ateActorTemplate:/ {print $2}')"
+if [[ -z "${SHARED_TEMPLATE}" ]]; then
+  echo "error: failed to resolve shared ateActorTemplate from cluster-agent-seed" >&2
+  exit 1
+fi
+echo "    Shared ActorTemplate: ${SHARED_TEMPLATE}"
+
+echo "==> 3. Creating ${COUNT} Cluster Agent Tasks (cluster-agent-001 .. cluster-agent-$(printf '%03d' "${COUNT}")) sharing ${SHARED_TEMPLATE} (concurrency=${CONCURRENCY})..."
 START_TS="$(date +%s)"
 seq 1 "${COUNT}" | xargs -P "${CONCURRENCY}" -I {} bash -ec '
   idx=$(printf "%03d" "$1")
@@ -38,13 +64,10 @@ metadata:
 spec:
   debug: true
   profile:
-    image: $4
+    ateActorTemplate: $4
   gateway:
     name: kube-agents-cluster-gw
-  env:
-    - name: CLUSTER_ID
-      value: cluster-${idx}
 EOF
-' _ {} "${AX_BIN}" "${CONTEXT}" "${IMAGE}"
+' _ {} "${AX_BIN}" "${CONTEXT}" "${SHARED_TEMPLATE}"
 END_TS="$(date +%s)"
-echo "    Created ${COUNT} Cluster Agent Tasks + Substrate Actors in $((END_TS - START_TS))s."
+echo "    Created ${COUNT} Cluster Agent Tasks + Substrate Actors sharing ${SHARED_TEMPLATE} in $((END_TS - START_TS))s."
