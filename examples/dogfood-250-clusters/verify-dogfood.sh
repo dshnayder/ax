@@ -19,10 +19,7 @@ CONTEXT="${KUBECTL_CONTEXT:-kage-adc}"
 AX_BIN="${AX_BIN:-${HOME}/bin/ax}"
 SAMPLES=(
   "cluster-agent-001"
-  "cluster-agent-050"
-  "cluster-agent-100"
-  "cluster-agent-150"
-  "cluster-agent-200"
+  "cluster-agent-125"
   "cluster-agent-250"
 )
 

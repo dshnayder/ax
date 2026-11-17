@@ -25,7 +25,7 @@ IMAGE="${AX_KUBE_AGENT_IMAGE:?AX_KUBE_AGENT_IMAGE (pinned by @sha256:...) is req
 echo "==> 1. Applying Gateway/kube-agents-cluster-gw on context ${CONTEXT}..."
 "${AX_BIN}" apply -f "${SCRIPT_DIR}/gateway.yaml" --context="${CONTEXT}"
 
-echo "==> 2. Provisioning 1 shared ActorTemplate via cluster-agent-seed (${IMAGE}, limits: cpu=100m, memory=256Mi)..."
+echo "==> 2. Provisioning 1 shared ActorTemplate via cluster-agent-seed (${IMAGE}, limits: cpu=2, memory=2Gi)..."
 "${AX_BIN}" apply --context="${CONTEXT}" -f - <<EOF
 apiVersion: ax.io/v1alpha1
 kind: Task
@@ -38,8 +38,8 @@ spec:
     image: ${IMAGE}
     resources:
       limits:
-        cpu: "100m"
-        memory: "256Mi"
+        cpu: "2"
+        memory: "2Gi"
   gateway:
     name: kube-agents-cluster-gw
 EOF
