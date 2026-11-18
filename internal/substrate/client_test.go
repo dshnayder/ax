@@ -830,8 +830,8 @@ func TestClient_EnsureActorEgressPolicy_RetriesAborted(t *testing.T) {
 }
 
 func TestBuildActorTemplate_WithSandboxContainer(t *testing.T) {
-	sandboxImg := "us-central1-docker.pkg.dev/demo/ax-kube-sandbox@sha256:1111111111111111111111111111111111111111111111111111111111111111"
-	tmpl := BuildActorTemplate("default", "two-container-tmpl", "us-central1-docker.pkg.dev/demo/ax-kube-agent@sha256:2222222222222222222222222222222222222222222222222222222222222222", map[string]string{
+	sandboxImg := "us-central1-docker.pkg.dev/demo/ax-sandbox@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+	tmpl := BuildActorTemplate("default", "two-container-tmpl", "us-central1-docker.pkg.dev/demo/ax-agent@sha256:2222222222222222222222222222222222222222222222222222222222222222", map[string]string{
 		SandboxImageEnv:      sandboxImg,
 		"AX_TASK_YAML":       "metadata:\n  name: secret-task\n",
 		"AX_WORKSPACE_YAML":  "metadata:\n  name: secret-ws\n",

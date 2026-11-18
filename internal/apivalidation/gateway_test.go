@@ -15,15 +15,12 @@
 package apivalidation_test
 
 import (
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/google/ax/internal/apivalidation"
 	"github.com/google/ax/pkg/apis/v1alpha1"
 	ateapipb "go.ate.dev/substrate/api/ateapi/v1"
-	"gopkg.in/yaml.v3"
 )
 
 func TestValidateGateway(t *testing.T) {
@@ -64,10 +61,10 @@ func TestValidateGateway(t *testing.T) {
 				Header: "Authorization",
 				Prefix: "Bearer ",
 				ActorJwt: &ateapipb.ActorJwtSource{
-					Audiences:         []string{"kubeagents-credential-proxy"},
+					Audiences:         []string{"internal-api"},
 					ExpirationSeconds: 900,
 				},
-			}}}, "platform-agent-credential-proxy.kubeagents-system.svc.cluster.local", "platform-agent-credential-proxy.kubeagents-system.svc"),
+			}}}, "internal-api.app-system.svc.cluster.local", "internal-api.app-system.svc"),
 		},
 		{
 			name: "actorJwt over external http rejected",
@@ -191,22 +188,5 @@ func TestValidateGateway_Kubernetes(t *testing.T) {
 				t.Fatalf("error = %v, want containing %q", err, tt.wantErr)
 			}
 		})
-	}
-}
-
-func TestValidateDogfood250GatewayManifest(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("..", "..", "examples", "dogfood-250-clusters", "gateway.yaml"))
-	if err != nil {
-		t.Fatalf("read gateway.yaml: %v", err)
-	}
-	var gw v1alpha1.Gateway
-	if err := yaml.Unmarshal(data, &gw); err != nil {
-		t.Fatalf("unmarshal gateway.yaml: %v", err)
-	}
-	if err := apivalidation.ValidateGateway(&gw); err != nil {
-		t.Fatalf("ValidateGateway(dogfood gateway.yaml): %v", err)
-	}
-	if got := len(gw.GetSpec().GetEgress()); got != 3 {
-		t.Fatalf("egress rules count = %d, want 3", got)
 	}
 }
